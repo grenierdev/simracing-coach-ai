@@ -12,9 +12,10 @@ Relevé du 2026-11-15. [V] : vérifié dans le code source ou la documentation. 
 | Modèle | Un sous-processus d'adaptateur par rôle, choix via `ANTHROPIC_MODEL` ; changement à chaud via `session/set_config_option` (`configId: "model"`) |
 | Outils intégrés | `_meta.claudeCode.options.tools: []`, `allowedTools: ["mcp__coach"]`, mode `dontAsk`, et refus côté client dans `session/request_permission` (deuxième barrière) |
 | Transport MCP | HTTP streamable sur `127.0.0.1:<port éphémère>` dans le processus (`rmcp` 3.10, `transport-streamable-http-server`), avec jeton Bearer aléatoire |
-| Authentification | Clé API (`ANTHROPIC_API_KEY`) par défaut, voir plus bas |
+| Authentification | Abonnement du CLI (login claude.ai), décidé le 2026-11-15 |
+| Prompt système | Prompt du coach injecté en `override` à la place de celui de Claude Code, décidé le 2026-11-15 |
 | Référence | Import manuel du CSV Garage61 ; l'API ne donne pas accès aux tours hors équipe |
-| STT/TTS | moshi-server sous Linux ou WSL2 avec CUDA, client WebSocket et MessagePack côté Windows |
+| STT/TTS | moshi-server : essai de compilation native sous Windows, repli sur WSL2 ; client WebSocket et MessagePack identique dans les deux cas |
 | Latence 1,5 s | **À risque**, voir la dernière section |
 
 ## 1. Crates pour le SDK iRacing et les .ibt
@@ -76,7 +77,8 @@ Prompt système et CLAUDE.md [V] :
 
 - Par défaut, `settingSources` vaut `["user","project","local"]` : le CLAUDE.md du répertoire de travail est chargé, mais aussi les réglages utilisateur du poste.
 - Le champ ACP `systemPrompt: {mode: "override", content: [...]}` remplace complètement le prompt de Claude Code.
-- **Proposition, qui s'écarte du cahier des charges** : garder le fichier `CLAUDE.md` du coach dans le répertoire des sessions, mais l'injecter nous-mêmes en `override`, avec `settingSources: []`. On retire ainsi le prompt système de Claude Code (environ 15 à 25 k tokens avec les outils [S]) et les réglages personnels du poste. C'est le principal levier de latence. À valider avec toi.
+- **Décision (2026-11-15)** : le fichier `CLAUDE.md` du coach reste dans le répertoire des sessions, mais le programme le lit et l'injecte en `override`, avec `settingSources: []`. On retire ainsi le prompt système de Claude Code (environ 15 à 25 k tokens avec les outils [S]) et les réglages personnels du poste. C'est le principal levier de latence. Écart assumé par rapport au cahier des charges, où Claude Code chargeait lui-même le CLAUDE.md.
+- [S] À vérifier au jalon 4 : `settingSources: []` ne doit pas couper l'accès au login. Les identifiants sont stockés à part des settings, ce qui devrait suffire.
 
 ## 5. Transport MCP
 
@@ -88,12 +90,12 @@ Prompt système et CLAUDE.md [V] :
 ## 6. Authentification de Claude Code
 
 - [V] L'adaptateur utilise les identifiants du CLI `claude` : soit un login claude.ai déjà fait, soit `ANTHROPIC_API_KEY`, `apiKeyHelper` ou une clé Console.
-- [V] La documentation de l'Agent SDK dit : « Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK. »
-- **Choix proposé : clé API**, lue dans `ANTHROPIC_API_KEY`, jamais dans le code ni dans un fichier versionné.
-  - Utiliser son propre abonnement pour un outil personnel fonctionne techniquement, mais reste une zone grise vis-à-vis de cette règle.
-  - Une application distribuée doit utiliser une clé API.
-  - L'adaptateur a une option `--hide-claude-auth` qui refuse les sessions payées par abonnement : on peut l'activer pour s'en assurer.
-- Nommage : « Claude Code » ne doit pas apparaître dans le nom du produit ; « Powered by Claude » est permis.
+- **Décision (2026-11-15) : abonnement du CLI**, pour un usage personnel. Aucune clé API.
+- Mise en place : se connecter une fois sur le poste avec le CLI (`claude`, puis `/login`).
+- Le programme retire `ANTHROPIC_API_KEY` de l'environnement du sous-processus de l'adaptateur. Sinon le CLI utiliserait la clé à la place de l'abonnement, et la facturerait.
+- Ne pas passer `--hide-claude-auth` à l'adaptateur : cette option refuse justement les sessions payées par abonnement.
+- Pour mémoire, la documentation de l'Agent SDK n'autorise pas les produits tiers distribués à proposer le login claude.ai. Si l'application devait un jour être distribuée, il faudrait revenir à une clé API.
+- Les limites d'usage de l'abonnement s'appliquent : une session d'analyse en Opus qui tourne à chaque tour consommera vite le quota. À surveiller au jalon 6.
 
 ## 7. CSV Garage61
 
@@ -128,7 +130,19 @@ Prompt système et CLAUDE.md [V] :
   - réception : `Audio{pcm}` à 24 kHz, `Text{text,start_s,stop_s}`.
   - Modèle `kyutai/tts-1.6b-en_fr`. La config fournie utilise le module Python embarqué ; les réglages CFG sont dans la config, pas dans l'URL.
 - [S] Voix françaises : `cml-tts/fr/` (CC-BY 4.0) dans `kyutai/tts-voices`. Les voix `expresso/` sont non commerciales. Je n'ai pas pu lister le dépôt (huggingface.co bloqué).
-- [V] Windows n'est pas officiellement pris en charge et l'installation demande CUDA. Plan : moshi-server sous WSL2 avec CUDA ou sur une machine Linux ; le programme Windows ne fait que du WebSocket.
+- [V] Windows : le README de moshi dit « While we hope that the present codebase will work on Windows, we do not provide official support for it ». Aucun rapport de compilation native trouvé.
+- [V] Le code Rust de `moshi-server` 0.6.4 n'a aucune partie propre à Unix (pas de `cfg(unix)`, `libc` ni `nix`). Les obstacles sous Windows viennent de la chaîne de compilation :
+  - CUDA : `nvcc` et MSVC, pour candle avec la feature `cuda` ;
+  - libopus : la crate `opus` la compile en C ;
+  - Python : pyo3 lie libpython, même pour le STT seul.
+- [S] Le module TTS est en Python embarqué. Ses dépendances (`pyproject.toml`) et le script de démarrage (`start_tts.sh`, en bash) sont pensés pour Linux.
+- Plan :
+  1. Tenter la compilation native sur le PC de simracing, au jalon 3.
+  2. En cas d'échec, WSL2 avec CUDA. WSL2 accède au GPU NVIDIA avec les pilotes récents, et le port du serveur est joignable depuis Windows par `localhost`.
+  3. Une machine Linux séparée reste possible.
+
+  Le client est le même dans les trois cas : WebSocket et MessagePack.
+- [S] Partage du GPU avec iRacing : le STT (environ 1 milliard de paramètres) et le TTS (environ 1,6 milliard) tourneront sur la même carte que le jeu. Il faudra mesurer la VRAM et l'effet sur les images par seconde. Réduire `batch_size` (64 dans la config d'exemple) à 1 ou 2 diminue la mémoire réservée.
 
 ## 10. Latence de la conversation
 

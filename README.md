@@ -66,8 +66,9 @@ cargo run -p app --bin simcoach -- --synthetic
 
 Les jetons sont lus dans les variables d'environnement, jamais dans le code :
 
-- `ANTHROPIC_API_KEY`, au jalon 4 ;
 - `GARAGE61_TOKEN`, optionnel, au jalon 2.
+
+Claude est utilisé avec l'abonnement du CLI : il suffit de s'être connecté une fois avec `claude`. Il n'y a pas de clé API.
 
 Les fichiers `.env`, `*.ibt` et `*.csv` sont ignorés par git.
 
