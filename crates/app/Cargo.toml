@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 telemetry.workspace = true
+reference.workspace = true
 ui.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

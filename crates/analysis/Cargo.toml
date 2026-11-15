@@ -1,0 +1,13 @@
+[package]
+name = "analysis"
+description = "Alignement des tours, zones de virage, métriques et deltas par virage"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+telemetry.workspace = true
+
+[dev-dependencies]
+reference.workspace = true

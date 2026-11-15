@@ -1,0 +1,12 @@
+[package]
+name = "reference"
+description = "Import du tour de référence : CSV Garage61 et fichiers .ibt"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+telemetry.workspace = true
+csv.workspace = true
+thiserror.workspace = true

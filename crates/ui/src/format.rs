@@ -25,6 +25,22 @@ pub fn delta(secs: f64) -> String {
     format!("{secs:+.3}")
 }
 
+/// Écart de position en mètres : `+12 m`.
+pub fn meters(d: Option<f64>) -> String {
+    match d {
+        Some(d) if d.is_finite() => format!("{d:+.0} m"),
+        _ => "–".into(),
+    }
+}
+
+/// Rapport sans unité : `0.92`.
+pub fn ratio(r: Option<f64>) -> String {
+    match r {
+        Some(r) if r.is_finite() => format!("{r:.2}"),
+        _ => "–".into(),
+    }
+}
+
 pub fn kmh(mps: f32) -> String {
     if mps.is_finite() {
         format!("{:.0}", mps * 3.6)

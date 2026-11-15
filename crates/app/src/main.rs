@@ -5,7 +5,10 @@
 //! simcoach --replay session.ibt    rejoue un .ibt comme s'il était live
 //!          [--speed 2.0] [--loop]
 //! simcoach --synthetic             rejoue une session synthétique générée en mémoire
+//! simcoach ... --reference ref.csv  tour de référence (CSV Garage61 ou .ibt)
 //! simcoach --write-synthetic f.ibt écrit la session synthétique dans un fichier
+//! simcoach --write-synthetic-reference <dossier>
+//!                                  écrit un tour de référence synthétique (CSV Garage61)
 //! ```
 
 use std::path::PathBuf;
@@ -19,8 +22,10 @@ use telemetry::{
 #[derive(Debug, Default)]
 struct Args {
     replay: Option<PathBuf>,
+    reference: Option<PathBuf>,
     synthetic: bool,
     write_synthetic: Option<PathBuf>,
+    write_synthetic_reference: Option<PathBuf>,
     speed: f64,
     looping: bool,
 }
@@ -35,9 +40,23 @@ fn parse_args() -> anyhow::Result<Args> {
         match a.as_str() {
             "--replay" => args.replay = Some(it.next().context("--replay <fichier.ibt>")?.into()),
             "--synthetic" => args.synthetic = true,
+            "--reference" => {
+                args.reference = Some(
+                    it.next()
+                        .context("--reference <fichier .csv ou .ibt>")?
+                        .into(),
+                )
+            }
             "--write-synthetic" => {
                 args.write_synthetic =
                     Some(it.next().context("--write-synthetic <fichier>")?.into())
+            }
+            "--write-synthetic-reference" => {
+                args.write_synthetic_reference = Some(
+                    it.next()
+                        .context("--write-synthetic-reference <dossier>")?
+                        .into(),
+                )
             }
             "--speed" => {
                 args.speed = it
@@ -49,7 +68,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--loop" => args.looping = true,
             "-h" | "--help" => {
                 println!(
-                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--write-synthetic fichier.ibt]"
+                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--reference fichier.csv|.ibt] [--write-synthetic fichier.ibt] [--write-synthetic-reference dossier]"
                 );
                 std::process::exit(0);
             }
@@ -66,6 +85,38 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = parse_args()?;
+
+    if let Some(dir) = &args.write_synthetic_reference {
+        // Tour « pro » au rythme limite, au format CSV Garage61, sans YawRate ni
+        // LatAccel (estimés à l'import depuis la trajectoire).
+        let samples = SyntheticTrack::demo().simulate_lap(1.0, 0.0, 0.0);
+        let t = samples.len() as f64 / 60.0;
+        let name = format!(
+            "Garage 61 - Pilote Pro - Voiture synthétique - Circuit synthétique - {:02}.{:02}.{:03} - demo.csv",
+            (t / 60.0) as u32,
+            (t % 60.0) as u32,
+            ((t.fract()) * 1000.0).round() as u32
+        );
+        let columns = [
+            "Speed",
+            "LapDistPct",
+            "Lat",
+            "Lon",
+            "Brake",
+            "Throttle",
+            "RPM",
+            "SteeringWheelAngle",
+            "Gear",
+            "Clutch",
+            "LongAccel",
+            "PositionType",
+        ];
+        let path = dir.join(name);
+        std::fs::write(&path, reference::write_garage61_csv(&samples, &columns))
+            .with_context(|| format!("écriture de {}", path.display()))?;
+        println!("Référence synthétique écrite dans {}", path.display());
+        return Ok(());
+    }
 
     if let Some(path) = &args.write_synthetic {
         SyntheticTrack::demo()
@@ -96,7 +147,7 @@ fn main() -> anyhow::Result<()> {
         Box::new(LiveSource::new())
     };
 
-    ui::run("Coach simracing", move || {
+    ui::run("Coach simracing", args.reference.clone(), move || {
         TelemetryHub::spawn(source, TelemetryHubConfig::default())
     });
     Ok(())

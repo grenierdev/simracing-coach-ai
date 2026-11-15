@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 telemetry.workspace = true
+reference.workspace = true
+analysis.workspace = true
 gpui.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
