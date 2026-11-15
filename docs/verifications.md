@@ -15,7 +15,7 @@ Relevé du 2026-11-15. [V] : vérifié dans le code source ou la documentation. 
 | Authentification | Abonnement du CLI (login claude.ai), décidé le 2026-11-15 |
 | Prompt système | Prompt du coach injecté en `override` à la place de celui de Claude Code, décidé le 2026-11-15 |
 | Référence | Import manuel du CSV Garage61 ; l'API ne donne pas accès aux tours hors équipe |
-| STT/TTS | **sherpa-onnx** embarqué dans le processus (décidé le 2026-11-15) : Parakeet pour le STT, Piper ou Kokoro pour le TTS ; Kyutai abandonné |
+| STT/TTS | **sherpa-onnx 1.13.8** embarqué dans le processus (décidé le 2026-11-15) : Parakeet v3 pour le STT, Piper `fr_FR-siwis` pour le TTS ; Kyutai abandonné. Mesuré : STT 0,2 à 0,4 s, premier son TTS 0,1 à 0,2 s sur CPU |
 | Latence 1,5 s | **À risque**, voir la dernière section |
 
 ## 1. Crates pour le SDK iRacing et les .ibt
@@ -116,6 +116,7 @@ Prompt système et CLAUDE.md [V] :
 - [V, via la documentation recopiée dans le wrapper `garage61api`] Base `https://garage61.net/api/v1`, `Authorization: Bearer <jeton>` (jeton personnel ou OAuth2 PKCE, scope `driving_data`). Endpoints : `GET /laps` (filtres voiture, piste, pilotes, équipes) et `GET /laps/{id}/csv`.
 - [V] « This method only returns laps driven yourself or your teammates… For privacy reasons, no global lap search is available. » Il n'y a **pas d'accès API aux tours de pilotes hors équipe**.
 - [S] Les data packs publiés par des équipes ont un endpoint dédié (`/teams/{team}/datapacks/...`). Qu'un simple abonné puisse les télécharger par l'API n'est pas vérifié.
+- La page développeur de garage61.net est une application JavaScript : sa documentation n'est pas lisible sans navigateur, et n'a donc pas pu être revérifiée depuis la session.
 - Décision : **import manuel du CSV** au jalon 2. L'import par l'API pour ses propres tours et ceux de son équipe viendra en option, avec le jeton dans `GARAGE61_TOKEN`.
 
 ## 9. STT et TTS : sherpa-onnx (décision du 2026-11-15)
@@ -124,25 +125,53 @@ Kyutai (moshi-server) est écarté : pas de prise en charge officielle de Window
 
 Retenu : **sherpa-onnx**, embarqué dans le processus, sans serveur, sans Python et sans WSL.
 
-- [V] Crate officielle `sherpa-onnx` 2.0.1 (2026-10-27), dépôt k2-fsa/sherpa-onnx, environ 620 000 téléchargements récents.
-- [V] Le build script de `sherpa-onnx-sys` télécharge une bibliothèque précompilée (`sherpa-onnx-v<version>-win-x64-static-MT-Release-lib.tar.bz2`) depuis les releases GitHub, liée en statique.
-  - Il existe aussi une feature `shared`.
-  - `SHERPA_ONNX_LIB_DIR` ou `SHERPA_ONNX_ARCHIVE_DIR` permettent de fournir une bibliothèque locale, par exemple une version CUDA ou une compilation hors ligne.
-  - Les bibliothèques précompilées tournent sur CPU.
-- [V] API Rust :
-  - `OfflineRecognizer` (transducteur NeMo, Canary, Whisper, entre autres), pour transcrire un enregistrement complet ;
-  - `OnlineRecognizer`, pour la reconnaissance en continu ;
-  - `Vad` ;
-  - `OfflineTts` (VITS/Piper, Kokoro, Matcha, Supertonic, Pocket, Kitten, ZipVoice), dont la génération accepte un callback qui reçoit le son au fur et à mesure.
-- [S] Modèles français, non vérifiés (pages de modèles inaccessibles depuis la session) :
-  - STT : Parakeet TDT 0.6B v3 int8 (25 langues européennes dont le français), avec Canary 180M flash en alternative ;
-  - TTS : voix Piper `fr_FR` (siwis, tom, upmc, gilles), ou Kokoro avec la voix `ff_siwis`.
-- Usage prévu :
-  - STT en push-to-talk : on accumule l'audio pendant l'appui et on le transcrit d'un coup au relâchement. La reconnaissance en continu est inutile ici.
-  - TTS phrase par phrase, au fil des `agent_message_chunk` : chaque phrase complète part en synthèse pendant que la suivante arrive.
-- Le crate `voice` exposera des traits `Stt` et `Tts`, pour pouvoir brancher d'autres moteurs et comparer à l'oreille : voix Windows SAPI/WinRT en repli, Kyutai plus tard si besoin.
+### Version : 1.13.8, pas 2.x
+
+- [V] Depuis la 2.0, sherpa-onnx n'embarque plus le phonémiseur espeak-ng pour les voix Piper/VITS : `--vits-data-dir` est ignoré, et la synthèse échoue faute de `phoneme_codepoints` fournis par un phonémiseur externe. Testé avec la 2.0.1.
+- **Décision : épingler la crate `sherpa-onnx` en `=1.13.8`**, dernière version 1.x, qui phonémise encore elle-même. Son API Rust est la même que celle de la 2.0.1 pour notre usage.
+- Pour passer plus tard à la 2.x, il faudra un phonémiseur externe. Candidats : la crate `espeak-ng` (portage Rust pur, 0.2.0) ou des liaisons à la bibliothèque C.
+- Licence : espeak-ng est sous GPL-3, et il est lié dans la bibliothèque sherpa-onnx 1.x. Aucun problème pour un usage personnel ; à revoir si l'application devait être distribuée.
+
+### Distribution de la bibliothèque
+
+- [V] Le build script de `sherpa-onnx-sys` télécharge une bibliothèque précompilée depuis les releases GitHub (statique par défaut). Sur un poste avec un accès Internet normal, `cargo build` suffit.
+- [V] Les mêmes bibliothèques sont publiées sur npm (`sherpa-onnx-linux-x64`, `sherpa-onnx-win-x64`) et sur PyPI (`sherpa-onnx-core`). Pour s'en servir : feature `shared`, plus `SHERPA_ONNX_LIB_DIR` qui pointe vers le dossier de la bibliothèque. C'est ce qui a servi aux mesures ci-dessous, les releases GitHub étant inaccessibles depuis la session cloud.
+
+### Modèles français (vérifiés sur Hugging Face, dépôts `csukuangfj/...`)
+
+| Usage | Modèle | Taille | Licence |
+|---|---|---|---|
+| STT | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` (25 langues européennes) | ~670 Mo | CC-BY 4.0 (NVIDIA) [S] |
+| STT, alternative | `sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8` | plus petit | [S] |
+| TTS | `vits-piper-fr_FR-siwis-medium` (voix féminine) | 63 Mo | CC-BY 4.0 [V] |
+| TTS | `vits-piper-fr_FR-tom-medium` (voix masculine) | 61 Mo | **AGPLv3** [V] : à éviter |
+| TTS | autres voix Piper `fr_FR` : gilles, mls, upmc, tjiho, miro | | à vérifier une par une |
+| TTS | Kokoro multilingue, voix `ff_siwis` (locuteur 30) | ~300 Mo [S] | Apache 2.0 [S] |
+
+### Mesures (session cloud, 4 vCPU partagés, sans GPU, 4 threads)
+
+| Étape | Mesure |
+|---|---|
+| Chargement TTS Piper / STT Parakeet | 1,0 s / 2,1 s, une fois au démarrage |
+| TTS : premier bloc audio, phrase de 2 à 3,4 s | 80 à 180 ms (environ 20 fois plus rapide que le temps réel) |
+| STT : phrase de 2 à 3,4 s | 210 à 360 ms |
+| STT : enregistrement réel de 5 s (`test_wavs/fr.wav`) | 415 ms, transcription exacte |
+
+Phrases de coaching synthétisées puis retranscrites :
+
+- « Freine cinq mètres plus tard au T5. » → « Freine 5 mètres plus tard au T5. »
+- « Tu perds deux dixièmes au virage quatre, reprends les gaz plus tôt. » → « Tu perds deux dixièmes au virage 4. Reprends les gaz plus tôt. »
+- « Je n'ai plus de rotation au T5, qu'est-ce que je change ? » → identique.
+
+Parakeet écrit les nombres en chiffres, ce qui facilite le repérage des virages (« T5 », « virage 4 »). Un PC de bureau récent devrait faire mieux que ces vCPU partagés.
+
+### Usage prévu
+
+- STT en push-to-talk : on accumule l'audio pendant l'appui et on le transcrit d'un coup au relâchement.
+- TTS phrase par phrase, au fil des `agent_message_chunk`.
+- Le crate `voice` exposera des traits `Stt` et `Tts` pour pouvoir brancher d'autres moteurs : voix Windows SAPI/WinRT en repli, Kokoro pour comparer.
 - Capture et lecture audio : `cpal` (WASAPI sous Windows).
-- Les modèles sont téléchargés au premier lancement dans le répertoire de données de l'utilisateur, et non versionnés.
+- Les modèles sont téléchargés au premier lancement depuis Hugging Face dans le répertoire de données de l'utilisateur, et non versionnés.
 
 ## 10. Latence de la conversation
 
@@ -155,10 +184,10 @@ Estimations à confirmer [S] :
 
 | Étape | Estimation |
 |---|---|
-| STT : du relâchement du bouton au texte final | 0,1 à 0,3 s avec Parakeet int8 sur CPU, pour quelques secondes de parole |
+| STT : du relâchement du bouton au texte final | **mesuré** : 0,2 à 0,4 s (Parakeet v3 int8, CPU) |
 | Claude : du prompt au premier `agent_message_chunk`, Haiku, session chaude | 0,7 à 1,5 s avec prompt en `override` et `tools: []` ; 1,5 à 3 s avec le prompt de Claude Code |
-| TTS : de la première phrase au premier son | environ 0,1 s avec Piper sur CPU (Kokoro un peu plus lent) |
-| **Total** | **0,9 à 2 s** |
+| TTS : de la première phrase au premier son | **mesuré** : 0,08 à 0,18 s (Piper, CPU), plus la latence de la sortie audio |
+| **Total** | **1 à 2 s**, selon Claude |
 
 La cible de 1,5 s devient plausible avec sherpa-onnx (STT et TTS rapides, sans aller-retour réseau), à condition que Claude réponde vite : prompt en `override`, cache de prompt chaud, Haiku sans réflexion, TTS lancé dès la première phrase. Leviers si ça ne passe pas :
 
