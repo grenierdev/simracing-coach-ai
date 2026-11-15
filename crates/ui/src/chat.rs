@@ -113,7 +113,10 @@ impl Chat {
         if log.len() < self.tools_seen {
             self.tools_seen = 0;
         }
-        for t in &log[self.tools_seen..] {
+        for t in log[self.tools_seen..]
+            .iter()
+            .filter(|t| t.source.is_empty() || t.source == "conversation")
+        {
             let mark = if t.ok { "" } else { " (erreur)" };
             let text = format!("{} · {:.0} ms{mark}", t.name, t.millis);
             let pending = self.entries.iter_mut().rev().take(20).find(|e| {
@@ -212,6 +215,7 @@ mod tests {
             text: "Le T4.".into(),
         });
         c.sync_tools(&[ToolCallLog {
+            source: "conversation".into(),
             name: "get_session_overview".into(),
             ok: true,
             millis: 3.2,
@@ -225,6 +229,7 @@ mod tests {
         assert_eq!(c.entries[1].text, "Je regarde. Le T4.");
         assert_eq!(c.entries[2].text, "get_session_overview · 3 ms");
         c.sync_tools(&[ToolCallLog {
+            source: "conversation".into(),
             name: "get_session_overview".into(),
             ok: true,
             millis: 3.2,
@@ -252,6 +257,7 @@ mod tests {
         });
         // La durée arrive après le début de la réponse : elle complète la ligne existante.
         c.sync_tools(&[ToolCallLog {
+            source: "conversation".into(),
             name: "get_corner_summary".into(),
             ok: true,
             millis: 4.0,

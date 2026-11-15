@@ -200,20 +200,14 @@ impl CoachMcp {
     }
 
     #[tool(
-        description = "Remplace ou complète les consignes dites automatiquement aux tours suivants. Chaque consigne est placée par virage (ancre + décalage en mètres) ou par position absolue. Le coach se tait de toute façon en zone de freinage."
+        description = "Remplace ou complète les consignes du coach dites automatiquement aux tours suivants (le plan du pilote n'est pas modifié). Chaque consigne est placée par virage (ancre + décalage en mètres) ou par position absolue. Le coach se tait de toute façon en zone de freinage."
     )]
     async fn update_plan(
         &self,
         Parameters(args): Parameters<UpdatePlanArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let t = Instant::now();
-        let current = self.data.current_plan();
-        let name = current
-            .as_ref()
-            .map(|(n, _)| n.clone())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "plan du coach".into());
-        let plan = merge_plan(current.map(|(_, p)| p), args.consignes, args.mode);
+        let plan = merge_plan(self.data.coach_plan(), args.consignes, args.mode);
         let analyzer = self.data.analyzer();
         let ctx = analyzer.as_ref().map(|a| TrackContext {
             model: &a.model,
@@ -238,7 +232,7 @@ impl CoachMcp {
                         })
                     })
                     .collect();
-                self.data.apply_plan(name, plan);
+                self.data.apply_coach_plan(plan);
                 ok_json(json!({ "consignes_actives": summary }))
             }
             Err(e) => tool_err(ToolError(format!("plan refusé : {e}"))),

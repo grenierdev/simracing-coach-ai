@@ -13,9 +13,9 @@ Pipeline vocal : STT → Claude (via ACP) → TTS. Le STT et le TTS tournent dan
 | 3. Déclencheurs, consignes statiques, TTS | **fait** |
 | 4. Serveur MCP et client ACP, saisie texte | **fait** |
 | 5. STT push-to-talk, conversation vocale | **fait** |
-| 6. Planification automatique du tour suivant | à faire |
+| 6. Planification automatique du tour suivant | **fait** |
 
-![Jalon 5 : push-to-talk réglé sur F9, conversation avec le coach](docs/jalon5.png)
+![Jalon 6 : consigne du coach sur T6 préparée par la session d'analyse (faux agent)](docs/jalon6.png)
 
 Les conclusions des vérifications préalables (crates, versions, ACP, MCP, authentification, Garage61, STT/TTS, latence) sont dans [docs/verifications.md](docs/verifications.md).
 
@@ -62,6 +62,8 @@ La référence se choisit aussi dans l'interface (bouton « Choisir… »).
 simcoach ... --plan plans/synthetique.toml   # plan de consignes
 simcoach ... --no-voice                      # consignes affichées sans être dites
 simcoach ... --model sonnet                  # modèle de la conversation (défaut : haiku)
+simcoach ... --analysis-model opus          # modèle de la planification (défaut : sonnet)
+simcoach ... --no-planning                   # sans session d'analyse
 simcoach ... --no-agent                      # sans Claude
 ```
 
@@ -223,3 +225,18 @@ Déroulé :
 4. la réponse est découpée en phrases au fil de l'eau ; chaque phrase est dite dès qu'elle est complète, via le moteur de consignes, donc jamais en zone de freinage. « Réponses dites : non » coupe la voix des réponses (le texte reste affiché).
 
 L'interface affiche la latence du dernier tour vocal : fin de parole → texte → premier mot de Claude → premier son.
+
+## Planification automatique du tour suivant
+
+Une seconde session ACP, distincte de la conversation, joue l'ingénieur de piste (Sonnet par défaut, `--analysis-model`, réflexion permise). À chaque tour complet et valide :
+
+1. le programme lui envoie le bilan : temps du tour, vue d'ensemble de la session (`get_session_overview`, jointe au message pour économiser un appel) et consignes du coach actives ;
+2. Claude creuse les virages les plus coûteux (`get_corner_summary`, `get_corner_trace` au besoin) ;
+3. il remplace la **couche de consignes du coach** par `update_plan` : au plus trois consignes, placées avant les freinages, qui expirent après deux tours ;
+4. son résumé d'une phrase s'affiche dans le panneau « Consignes ».
+
+Le plan du pilote (fichier TOML) n'est jamais modifié : les deux couches sont résolues séparément et dites ensemble, les consignes du coach marquées « ·C ». Une consigne inchangée d'un plan à l'autre garde son état (une consigne « une fois » déjà dite n'est pas redite). Un tour terminé pendant une analyse est ignoré ; l'analyse ne bloque ni la boucle rapide ni la conversation. Chaque session a son propre point d'accès MCP, pour que les journaux d'outils restent séparés.
+
+Le prompt de l'ingénieur est dans `%LOCALAPPDATA%\simcoach\data\sessions\analyse\CLAUDE.md` (créé depuis `crates/coach/prompts/ANALYSE.md`). « Auto : oui/non » dans le panneau « Consignes » active ou suspend la planification (réglage enregistré).
+
+Coût : une analyse par tour valide avec Sonnet, sur l'abonnement. Sur une longue session, c'est la principale consommation de quota ; `--no-planning` ou « Auto : non » l'arrête.

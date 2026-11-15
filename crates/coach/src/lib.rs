@@ -41,6 +41,9 @@ pub use speech::SentenceSplitter;
 /// Prompt système par défaut du coach (copié en `CLAUDE.md` dans le dossier de session).
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/CLAUDE.md");
 
+/// Prompt système de la session d'analyse (planification du tour suivant).
+pub const DEFAULT_ANALYSIS_PROMPT: &str = include_str!("../prompts/ANALYSE.md");
+
 /// Préfixe des outils de notre serveur MCP chez Claude Code.
 pub fn mcp_tool_prefix(server: &str) -> String {
     format!("mcp__{server}__")

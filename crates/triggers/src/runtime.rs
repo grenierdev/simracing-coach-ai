@@ -40,6 +40,8 @@ pub struct LogEntry {
 pub struct RuntimeStatus {
     pub plan_name: Option<String>,
     pub plan_error: Option<String>,
+    /// Erreur de résolution du plan du coach (virage disparu après un changement de référence).
+    pub coach_error: Option<String>,
     pub triggers: Vec<TriggerView>,
     /// Dernières phrases dites (la plus récente en dernier).
     pub log: Vec<LogEntry>,
@@ -61,6 +63,8 @@ pub enum SayWhen {
 struct Shared {
     analyzer: Option<Arc<Analyzer>>,
     plan: Option<(String, Plan)>,
+    /// Couche de consignes gérée par Claude (`update_plan`), distincte du plan du pilote.
+    coach_plan: Option<Plan>,
     dirty: bool,
     injections: Vec<(String, SayWhen)>,
     status: RuntimeStatus,
@@ -79,6 +83,7 @@ impl TriggerRuntime {
         let shared = Arc::new(Mutex::new(Shared {
             analyzer: None,
             plan: None,
+            coach_plan: None,
             dirty: true,
             injections: vec![],
             status: RuntimeStatus::default(),
@@ -111,9 +116,20 @@ impl TriggerRuntime {
         s.dirty = true;
     }
 
-    /// Plan courant (nom et contenu).
+    /// Plan courant du pilote (nom et contenu).
     pub fn current_plan(&self) -> Option<(String, Plan)> {
         self.shared.lock().unwrap().plan.clone()
+    }
+
+    /// Remplace la couche de consignes du coach ; le plan du pilote n'est pas touché.
+    pub fn set_coach_plan(&self, plan: Plan) {
+        let mut s = self.shared.lock().unwrap();
+        s.coach_plan = Some(plan);
+        s.dirty = true;
+    }
+
+    pub fn coach_plan(&self) -> Option<Plan> {
+        self.shared.lock().unwrap().coach_plan.clone()
     }
 
     /// Carte de la piste courante (référence chargée).
@@ -144,6 +160,9 @@ impl Drop for TriggerRuntime {
     }
 }
 
+/// Préfixe des identifiants des consignes du coach.
+pub const COACH_PREFIX: &str = "coach:";
+
 fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(TriggerEngine, f64)> {
     shared.dirty = false;
     // Sans plan, un moteur vide sert quand même aux phrases injectées.
@@ -154,31 +173,47 @@ fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(Trigge
         model: &a.model,
         reference: &a.reference_metrics,
     });
-    match resolve(plan, ctx.as_ref()) {
-        Ok(triggers) => {
-            let quiet = ctx
-                .as_ref()
-                .map(|c| c.quiet_zones(&plan.reglages))
-                .unwrap_or_default();
-            let texts: Vec<String> = triggers.iter().map(|t| t.text.clone()).collect();
-            speech.prepare(&texts);
+    // Les deux couches sont résolues séparément : une erreur dans l'une ne
+    // fait pas perdre l'autre.
+    let mut triggers = match resolve(plan, ctx.as_ref()) {
+        Ok(t) => {
             shared.status.plan_error = None;
-            shared.status.quiet_zones = quiet.len();
-            let length = shared
-                .analyzer
-                .as_ref()
-                .map(|a| a.model.length_m)
-                .unwrap_or(4000.0);
-            let engine = TriggerEngine::new(triggers, quiet);
-            shared.status.triggers = engine.views();
-            Some((engine, length))
+            t
         }
         Err(e) => {
             shared.status.plan_error = Some(e.to_string());
-            shared.status.triggers.clear();
-            None
+            vec![]
+        }
+    };
+    if let Some(coach) = &shared.coach_plan {
+        let mut coach = coach.clone();
+        coach.reglages = plan.reglages.clone();
+        match resolve(&coach, ctx.as_ref()) {
+            Ok(t) => {
+                shared.status.coach_error = None;
+                triggers.extend(t.into_iter().map(|mut t| {
+                    t.id = format!("{COACH_PREFIX}{}", t.id);
+                    t
+                }));
+            }
+            Err(e) => shared.status.coach_error = Some(e.to_string()),
         }
     }
+    let quiet = ctx
+        .as_ref()
+        .map(|c| c.quiet_zones(&plan.reglages))
+        .unwrap_or_default();
+    let texts: Vec<String> = triggers.iter().map(|t| t.text.clone()).collect();
+    speech.prepare(&texts);
+    shared.status.quiet_zones = quiet.len();
+    let length = shared
+        .analyzer
+        .as_ref()
+        .map(|a| a.model.length_m)
+        .unwrap_or(4000.0);
+    let engine = TriggerEngine::new(triggers, quiet);
+    shared.status.triggers = engine.views();
+    Some((engine, length))
 }
 
 /// Consigne ponctuelle correspondant à une phrase injectée.
@@ -240,7 +275,11 @@ fn run(
             let mut s = shared.lock().unwrap();
             if s.dirty {
                 analyzer = s.analyzer.clone();
-                engine = rebuild(&mut s, speech.as_mut());
+                let mut fresh = rebuild(&mut s, speech.as_mut());
+                if let (Some((new, _)), Some((old, _))) = (fresh.as_mut(), engine.as_ref()) {
+                    new.carry_state_from(old);
+                }
+                engine = fresh;
             }
             if let Some((eng, _)) = engine.as_mut() {
                 for (text, when) in std::mem::take(&mut s.injections) {
@@ -430,6 +469,57 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(*fake.said.lock().unwrap(), vec!["Je regarde le T5."]);
+    }
+
+    #[test]
+    fn coach_layer_adds_to_user_plan() {
+        let track = SyntheticTrack::demo();
+        let samples = track.simulate_lap(1.0, 0.0, 0.0);
+        let reference = telemetry::Lap {
+            number: 1,
+            start_time: 0.0,
+            lap_time: samples.len() as f64 / 60.0,
+            flags: LapFlags {
+                complete: true,
+                ..Default::default()
+            },
+            samples,
+        };
+        let analyzer = Arc::new(Analyzer::new(
+            &reference,
+            Some(track.length_m()),
+            &CornerDetectionParams::default(),
+        ));
+        let (_tx, rx) = bounded(10);
+        let rt = TriggerRuntime::spawn(rx, Box::new(FakeSpeech::default()));
+        rt.set_reference(Some(analyzer));
+        rt.set_plan(
+            "pilote",
+            Plan::parse("[[consigne]]\nid = \"a\"\nposition = 0.1\ntexte = \"Pilote.\"").unwrap(),
+        );
+        rt.set_coach_plan(
+            Plan::parse("[[consigne]]\nid = \"t4\"\nvirage = \"T4\"\ntexte = \"Coach.\"").unwrap(),
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let ids: Vec<String> = rt
+            .status()
+            .triggers
+            .iter()
+            .map(|v| v.trigger.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["a", "coach:t4"]);
+        assert_eq!(
+            rt.current_plan().unwrap().1.consignes.len(),
+            1,
+            "plan du pilote intact"
+        );
+
+        // Plan du coach invalide (virage inconnu) : le plan du pilote reste actif.
+        rt.set_coach_plan(Plan::parse("[[consigne]]\nvirage = \"T99\"\ntexte = \"x\"").unwrap());
+        std::thread::sleep(Duration::from_millis(300));
+        let st = rt.status();
+        assert!(st.coach_error.is_some());
+        assert_eq!(st.triggers.len(), 1);
     }
 
     #[test]

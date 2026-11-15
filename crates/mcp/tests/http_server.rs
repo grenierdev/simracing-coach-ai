@@ -17,7 +17,7 @@ use triggers::{Plan, SayWhen};
 struct Fake {
     snap: LiveSnapshot,
     analyzer: Option<Arc<Analyzer>>,
-    plan: Mutex<Option<(String, Plan)>>,
+    plan: Mutex<Option<Plan>>,
     said: Mutex<Vec<String>>,
     calls: Mutex<Vec<String>>,
 }
@@ -29,11 +29,11 @@ impl CoachData for Fake {
     fn analyzer(&self) -> Option<Arc<Analyzer>> {
         self.analyzer.clone()
     }
-    fn current_plan(&self) -> Option<(String, Plan)> {
+    fn coach_plan(&self) -> Option<Plan> {
         self.plan.lock().unwrap().clone()
     }
-    fn apply_plan(&self, name: String, plan: Plan) {
-        *self.plan.lock().unwrap() = Some((name, plan));
+    fn apply_coach_plan(&self, plan: Plan) {
+        *self.plan.lock().unwrap() = Some(plan);
     }
     fn say(&self, text: String, _when: SayWhen) {
         self.said.lock().unwrap().push(text);
@@ -149,14 +149,7 @@ async fn tools_over_http_with_bearer_token() {
         .unwrap();
     assert_ne!(r.is_error, Some(true), "{}", text_of(&r));
     assert_eq!(
-        data.plan
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .1
-            .consignes
-            .len(),
+        data.plan.lock().unwrap().as_ref().unwrap().consignes.len(),
         1
     );
 
@@ -170,14 +163,7 @@ async fn tools_over_http_with_bearer_token() {
         .unwrap();
     assert_eq!(r.is_error, Some(true));
     assert_eq!(
-        data.plan
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .1
-            .consignes
-            .len(),
+        data.plan.lock().unwrap().as_ref().unwrap().consignes.len(),
         1,
         "plan inchangé"
     );

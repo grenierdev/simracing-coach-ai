@@ -17,6 +17,7 @@ mcp.workspace = true
 input.workspace = true
 crossbeam-channel.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 directories.workspace = true
 gpui.workspace = true
@@ -28,5 +29,6 @@ gpui_platform = { workspace = true, features = ["wayland", "x11"] }
 gpui_platform.workspace = true
 
 [dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 agent-client-protocol.workspace = true
 tokio.workspace = true

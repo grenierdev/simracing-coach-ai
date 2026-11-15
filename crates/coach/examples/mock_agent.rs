@@ -26,6 +26,54 @@ fn chunk(t: &str) -> SessionUpdate {
     SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(t))))
 }
 
+async fn call(
+    url: String,
+    token: String,
+    tool: &'static str,
+    args: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(url).auth_header(token),
+    );
+    let client = ().serve(transport).await.map_err(|e| e.to_string())?;
+    let mut params = CallToolRequestParams::new(tool);
+    if let Some(a) = args.and_then(|a| a.as_object().cloned()) {
+        params = params.with_arguments(a);
+    }
+    let r = client.call_tool(params).await.map_err(|e| e.to_string())?;
+    let body = serde_json::to_value(&r.content).map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    let text = body[0]["text"].as_str().unwrap_or("{}");
+    Ok(serde_json::from_str(text).unwrap_or(serde_json::Value::String(text.into())))
+}
+
+/// Analyse simulée : consigne sur le virage le plus coûteux.
+async fn plan_next_lap(url: String, token: String) -> String {
+    let v = match call(url.clone(), token.clone(), "get_session_overview", None).await {
+        Ok(v) => v,
+        Err(e) => return format!("Télémétrie indisponible : {e}"),
+    };
+    let Some(worst) = v["temps_perdu_par_virage"].get(0) else {
+        return "Pas encore de tour à analyser.".into();
+    };
+    let corner = worst["virage"].as_str().unwrap_or("T1").to_string();
+    let args = serde_json::json!({
+        "mode": "remplacer",
+        "consignes": [{
+            "id": format!("auto-{corner}"), "virage": corner, "ancre": "freinage",
+            "decalage_m": -300, "priorite": 6, "expire_apres_tours": 2,
+            "texte": format!("{corner}, garde de la vitesse au point de corde.")
+        }]
+    });
+    match call(url, token, "update_plan", Some(args)).await {
+        Ok(_) => format!(
+            "{corner} : {:.0} centièmes perdus, consigne ajoutée.",
+            worst["perte_s"].as_f64().unwrap_or(0.0) * 100.0
+        ),
+        Err(e) => format!("Plan refusé : {e}"),
+    }
+}
+
 async fn overview(url: String, token: String) -> Result<serde_json::Value, String> {
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(url).auth_header(token),
@@ -74,8 +122,18 @@ async fn main() -> agent_client_protocol::Result<()> {
             async move |req: PromptRequest, responder: Responder<PromptResponse, V1>, cx: ConnectionTo<Client>| {
                 let endpoint = mcp.lock().unwrap().clone();
                 let sid = req.session_id.clone();
+                let is_analysis = matches!(req.prompt.first(), Some(ContentBlock::Text(t)) if t.text.starts_with("[Analyse]"));
                 tokio::spawn(async move {
                     let send = |u| cx.send_notification(SessionNotification::new(sid.clone(), u));
+                    if is_analysis {
+                        let summary = match endpoint {
+                            Some((url, token)) => plan_next_lap(url, token).await,
+                            None => "Pas de serveur MCP.".into(),
+                        };
+                        let _ = send(chunk(&summary));
+                        let _ = responder.respond(PromptResponse::new(StopReason::EndTurn));
+                        return;
+                    }
                     let _ = send(chunk("Je regarde. "));
                     let reply = match endpoint {
                         Some((url, token)) => {

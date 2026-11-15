@@ -36,10 +36,10 @@ impl CoachData for Data {
     fn analyzer(&self) -> Option<Arc<Analyzer>> {
         Some(self.analyzer.clone())
     }
-    fn current_plan(&self) -> Option<(String, Plan)> {
+    fn coach_plan(&self) -> Option<Plan> {
         None
     }
-    fn apply_plan(&self, _: String, _: Plan) {}
+    fn apply_coach_plan(&self, _: Plan) {}
     fn say(&self, _: String, _: SayWhen) {}
 }
 

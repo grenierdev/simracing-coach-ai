@@ -183,7 +183,13 @@ Parakeet écrit les nombres en chiffres, ce qui facilite le repérage des virage
 - Linux (développement) : `gilrs` (evdev, fonctionne en arrière-plan).
 - Vérifié : la capture et le suivi du push-to-talk fonctionnent avec le vrai clavier (X11, sous Xvfb + xdotool) ; le code DirectInput se compile et passe clippy pour la cible Windows. **Non vérifié** sur un vrai volant ou boîtier : à tester sur le PC.
 
-## 11. Latence de la conversation
+## 11. Planification (jalon 6)
+
+- Modèle de l'analyse : `ANTHROPIC_MODEL=sonnet` pour le sous-processus d'analyse, réflexion non coupée (pas de contrainte de latence : l'analyse tourne en arrière-plan).
+- Deux sous-processus d'adaptateur (conversation, analyse), chacun avec son point d'accès MCP. Le modèle de chaque rôle reste configurable (`--model`, `--analysis-model`).
+- Non mesuré avec Claude : durée réelle d'une analyse et consommation de quota par tour. Vérifié avec un faux agent : déclenchement, appel réel d'`update_plan` par le serveur MCP, couche du coach appliquée, plan du pilote intact.
+
+## 12. Latence de la conversation
 
 ### Mesure réelle (2026-11-15)
 

@@ -7,6 +7,7 @@
 pub mod chat;
 pub mod conversation;
 pub mod format;
+pub mod planner;
 pub mod settings;
 pub mod state;
 
@@ -30,6 +31,7 @@ use voice::{Speaker, SpeakerState, SpeakerStatus};
 
 use crate::chat::{Chat, Who};
 use crate::conversation::{ConvEvent, Conversation, VoiceLatency};
+use crate::planner::Planner;
 use crate::settings::Settings;
 use crate::state::{Comparisons, ReferenceState};
 use input::{CaptureResult, InputService};
@@ -71,6 +73,8 @@ pub struct Services {
     pub recorder: Option<Arc<Recorder>>,
     pub mic_name: Option<String>,
     pub settings: Settings,
+    /// Planification automatique du tour suivant (absente avec `--no-planning`).
+    pub planner: Option<Planner>,
 }
 
 pub enum ReferenceSource {
@@ -136,6 +140,7 @@ pub struct CoachView {
     recorder: Option<Arc<Recorder>>,
     mic_name: Option<String>,
     settings: Settings,
+    planner: Option<Planner>,
     capture: Option<crossbeam_channel::Receiver<CaptureResult>>,
     recording: bool,
     voice_latency: Option<VoiceLatency>,
@@ -165,6 +170,7 @@ impl CoachView {
             recorder,
             mic_name,
             settings,
+            planner,
         } = services;
         let refresh = cx.spawn(async move |this, cx| {
             loop {
@@ -224,6 +230,7 @@ impl CoachView {
             recorder,
             mic_name,
             settings,
+            planner,
             capture: None,
             recording: false,
             voice_latency: None,
@@ -279,6 +286,14 @@ impl CoachView {
         if let Some(i) = &self.input {
             self.capture = Some(i.capture());
         }
+    }
+
+    fn toggle_auto_planning(&mut self) {
+        self.settings.auto_planning = !self.settings.auto_planning;
+        if let Some(p) = &self.planner {
+            p.set_enabled(self.settings.auto_planning);
+        }
+        let _ = self.settings.save();
     }
 
     fn toggle_speak_replies(&mut self) {
@@ -851,11 +866,24 @@ impl CoachView {
             (PlanStatus::Failed(e), _) => (e.clone(), theme::ERR),
             (PlanStatus::Loaded(_), Some(e)) => (e.clone(), theme::ERR),
             (PlanStatus::Loaded(n), None) => (
-                format!(
-                    "{n} · {} consignes · {} zones de silence",
-                    self.coach_status.triggers.len(),
-                    self.coach_status.quiet_zones
-                ),
+                {
+                    let coach = self
+                        .coach_status
+                        .triggers
+                        .iter()
+                        .filter(|v| v.trigger.id.starts_with(triggers::COACH_PREFIX))
+                        .count();
+                    let own = self.coach_status.triggers.len() - coach;
+                    let coach = if coach > 0 {
+                        format!(" + {coach} du coach")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{n} · {own} consignes{coach} · {} zones de silence",
+                        self.coach_status.quiet_zones
+                    )
+                },
                 theme::TEXT,
             ),
         };
@@ -892,7 +920,71 @@ impl CoachView {
             .child(div().text_sm().text_color(color(tone)).child(line))
     }
 
-    fn render_coach(&self) -> impl IntoElement {
+    fn render_planner(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let p = self.planner.as_ref()?;
+        let st = p.status();
+        let (line, tone) = if !st.enabled {
+            (
+                "Planification automatique désactivée".to_string(),
+                theme::MUTED,
+            )
+        } else if let Some(lap) = st.running {
+            (
+                format!("Analyse du tour {lap} en cours ({})…", st.model),
+                theme::WARN,
+            )
+        } else if let Some(e) = &st.error {
+            (format!("Analyse : {e}"), theme::ERR)
+        } else if let Some((lap, summary, secs)) = &st.last {
+            (
+                format!("Tour {lap} analysé en {secs:.0} s : {summary}"),
+                theme::TEXT,
+            )
+        } else {
+            (
+                format!("Analyse ({}) après le prochain tour valide", st.model),
+                theme::MUTED,
+            )
+        };
+        let toggle = div()
+            .id("auto-planning")
+            .px_2()
+            .py_1()
+            .flex_none()
+            .rounded_md()
+            .bg(color(theme::BORDER))
+            .text_xs()
+            .cursor_pointer()
+            .child(if st.enabled {
+                "Auto : oui"
+            } else {
+                "Auto : non"
+            })
+            .on_click(cx.listener(|view, _, _, cx| {
+                view.toggle_auto_planning();
+                cx.notify();
+            }));
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_xs()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_color(color(tone))
+                        .child(line),
+                )
+                .child(toggle),
+        )
+    }
+
+    fn render_coach(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let st = &self.coach_status;
         let rows = st.triggers.iter().map(|v| {
             let (state, tone) = match v.state {
@@ -908,11 +1000,13 @@ impl CoachView {
                 ),
                 TriggerState::Expired => (format!("terminée ×{}", v.times_spoken), theme::IDLE),
             };
+            let coach = v.trigger.id.starts_with(triggers::COACH_PREFIX);
             let place = v
                 .trigger
                 .corner
                 .clone()
                 .unwrap_or_else(|| format!("{:.1} %", v.trigger.at_pct * 100.0));
+            let place = if coach { format!("{place} ·C") } else { place };
             div()
                 .flex()
                 .gap_2()
@@ -935,7 +1029,7 @@ impl CoachView {
                         .child(v.trigger.text.clone()),
                 )
         });
-        let log = st.log.iter().rev().take(3).map(|e| {
+        let log = st.log.iter().rev().take(2).map(|e| {
             div()
                 .flex()
                 .gap_2()
@@ -962,9 +1056,11 @@ impl CoachView {
                 .text_color(color(theme::WARN))
                 .child("silence : zone de freinage")
         });
+        let planner = self.render_planner(cx);
         panel("Consignes")
             .flex_1()
             .min_w_0()
+            .children(planner)
             .children(quiet)
             .child(
                 div()
@@ -1434,7 +1530,7 @@ impl Render for CoachView {
                             .min_w_0()
                             .child(self.render_live())
                             .child(div().flex_1().flex().min_h_0().child(self.render_corners()))
-                            .child(div().h(px(262.)).flex().child(self.render_coach())),
+                            .child(div().h(px(262.)).flex().child(self.render_coach(cx))),
                     ),
             )
     }

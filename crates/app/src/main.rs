@@ -10,6 +10,8 @@
 //! simcoach ... --no-voice           consignes affichées sans être dites
 //! simcoach ... --no-agent           sans Claude (pas d'adaptateur ACP)
 //! simcoach ... --model sonnet       modèle de la conversation (défaut : haiku)
+//! simcoach ... --analysis-model opus  modèle de la planification (défaut : sonnet)
+//! simcoach ... --no-planning        sans session d'analyse
 //! simcoach --write-synthetic f.ibt écrit la session synthétique dans un fichier
 //! simcoach --write-synthetic-reference <dossier>
 //!                                  écrit un tour de référence synthétique (CSV Garage61)
@@ -34,6 +36,8 @@ struct Args {
     no_voice: bool,
     no_agent: bool,
     model: Option<String>,
+    analysis_model: Option<String>,
+    no_planning: bool,
     synthetic: bool,
     write_synthetic: Option<PathBuf>,
     write_synthetic_reference: Option<PathBuf>,
@@ -54,6 +58,13 @@ fn parse_args() -> anyhow::Result<Args> {
             "--plan" => args.plan = Some(it.next().context("--plan <fichier.toml>")?.into()),
             "--no-voice" => args.no_voice = true,
             "--no-agent" => args.no_agent = true,
+            "--no-planning" => args.no_planning = true,
+            "--analysis-model" => {
+                args.analysis_model = Some(
+                    it.next()
+                        .context("--analysis-model <sonnet|opus|identifiant>")?,
+                )
+            }
             "--model" => {
                 args.model = Some(
                     it.next()
@@ -88,7 +99,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--loop" => args.looping = true,
             "-h" | "--help" => {
                 println!(
-                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--reference fichier.csv|.ibt] [--plan plan.toml] [--no-voice] [--no-agent] [--model haiku] [--write-synthetic fichier.ibt] [--write-synthetic-reference dossier]"
+                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--reference fichier.csv|.ibt] [--plan plan.toml] [--no-voice] [--no-agent] [--model haiku] [--analysis-model sonnet] [--no-planning] [--write-synthetic fichier.ibt] [--write-synthetic-reference dossier]"
                 );
                 std::process::exit(0);
             }
@@ -170,6 +181,11 @@ fn main() -> anyhow::Result<()> {
     let agent_options = agent::AgentOptions {
         enabled: !args.no_agent,
         model: args.model.clone().unwrap_or_else(|| "haiku".into()),
+        analysis: !args.no_planning,
+        analysis_model: args
+            .analysis_model
+            .clone()
+            .unwrap_or_else(|| "sonnet".into()),
     };
 
     ui::run(
@@ -184,6 +200,18 @@ fn main() -> anyhow::Result<()> {
             ));
             let agent = agent::start(hub.snapshot_handle(), triggers.clone(), &agent_options);
             let settings = ui::settings::Settings::load();
+            let planner = agent.analysis.clone().map(|analysis| {
+                let snap = hub.snapshot_handle();
+                ui::planner::Planner::spawn(
+                    analysis,
+                    agent_options.analysis_model.clone(),
+                    hub.events().clone(),
+                    std::sync::Arc::new(move || snap.get()),
+                    triggers.clone(),
+                    ui::planner::PlannerPolicy::default(),
+                    settings.auto_planning,
+                )
+            });
             let input = std::sync::Arc::new(input::InputService::spawn());
             input.set_ptt(settings.ptt.clone());
             let recorder: Option<std::sync::Arc<voice::Recorder>> = match voice::Recorder::open() {
@@ -222,6 +250,7 @@ fn main() -> anyhow::Result<()> {
                 recorder,
                 mic_name,
                 settings,
+                planner,
                 agent: agent.agent,
                 mcp_url: agent.mcp_url,
                 mcp_error: agent.mcp_error,

@@ -15,4 +15,4 @@ pub use plan::{
     Anchor, Condition, Plan, PlanError, QuietZone, Repeat, TrackContext, Trigger, TriggerSpec,
     resolve,
 };
-pub use runtime::{LogEntry, RuntimeStatus, SayWhen, SpeechOutput, TriggerRuntime};
+pub use runtime::{COACH_PREFIX, LogEntry, RuntimeStatus, SayWhen, SpeechOutput, TriggerRuntime};

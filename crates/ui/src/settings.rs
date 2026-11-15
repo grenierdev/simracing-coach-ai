@@ -13,6 +13,8 @@ pub struct Settings {
     pub ptt: Option<Binding>,
     /// Les réponses du coach sont dites à voix haute.
     pub speak_replies: bool,
+    /// La session d'analyse prépare les consignes du tour suivant.
+    pub auto_planning: bool,
 }
 
 impl Default for Settings {
@@ -20,6 +22,7 @@ impl Default for Settings {
         Settings {
             ptt: None,
             speak_replies: true,
+            auto_planning: true,
         }
     }
 }
@@ -74,6 +77,7 @@ mod tests {
                 button: 7,
             }),
             speak_replies: false,
+            auto_planning: false,
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);

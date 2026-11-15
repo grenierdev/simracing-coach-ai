@@ -26,6 +26,8 @@ pub use server::{CoachMcp, McpServerHandle, SERVER_NAME};
 /// Appel d'outil reçu, pour le journal de l'interface.
 #[derive(Debug, Clone)]
 pub struct ToolCallLog {
+    /// Session qui a appelé l'outil (« conversation », « analyse »).
+    pub source: String,
     pub name: String,
     pub ok: bool,
     pub millis: f64,
@@ -35,8 +37,9 @@ pub struct ToolCallLog {
 pub trait CoachData: Send + Sync + 'static {
     fn snapshot(&self) -> LiveSnapshot;
     fn analyzer(&self) -> Option<Arc<Analyzer>>;
-    fn current_plan(&self) -> Option<(String, Plan)>;
-    fn apply_plan(&self, name: String, plan: Plan);
+    /// Couche de consignes du coach (le plan du pilote n'est jamais modifié par Claude).
+    fn coach_plan(&self) -> Option<Plan>;
+    fn apply_coach_plan(&self, plan: Plan);
     fn say(&self, text: String, when: SayWhen);
     /// Notification d'un appel d'outil (journal de l'interface).
     fn tool_called(&self, _name: &str, _ok: bool, _millis: f64) {}

@@ -75,6 +75,8 @@ struct Slot {
     armed_lap: Option<i32>,
     expired: bool,
     dropped: u32,
+    /// Tour d'activation de la consigne (base de son expiration).
+    base_lap: Option<i32>,
 }
 
 struct Pending {
@@ -89,7 +91,6 @@ pub struct TriggerEngine {
     prev: Option<Sample>,
     /// Consignes injectées à armer au prochain échantillon.
     to_arm: Vec<usize>,
-    base_lap: Option<i32>,
     stop_sent: bool,
 }
 
@@ -115,15 +116,36 @@ impl TriggerEngine {
                     armed_lap: None,
                     expired: false,
                     dropped: 0,
+                    base_lap: None,
                 })
                 .collect(),
             quiet,
             pending: vec![],
             prev: None,
             to_arm: vec![],
-            base_lap: None,
             stop_sent: false,
         }
+    }
+
+    /// Reprend l'état des consignes inchangées d'un moteur précédent (même id,
+    /// même texte, même position) : un plan mis à jour ne fait pas redire une
+    /// consigne « une fois » déjà dite, ni repartir son expiration.
+    pub fn carry_state_from(&mut self, old: &TriggerEngine) {
+        for slot in &mut self.slots {
+            if let Some(o) = old.slots.iter().find(|o| {
+                o.trigger.id == slot.trigger.id
+                    && o.trigger.text == slot.trigger.text
+                    && (o.trigger.at_pct - slot.trigger.at_pct).abs() < 1e-9
+            }) {
+                slot.times_spoken = o.times_spoken;
+                slot.last_spoken_lap = o.last_spoken_lap;
+                slot.armed_lap = o.armed_lap;
+                slot.expired = o.expired;
+                slot.dropped = o.dropped;
+                slot.base_lap = o.base_lap;
+            }
+        }
+        self.prev = old.prev;
     }
 
     /// Ajoute une consigne ponctuelle (dite une seule fois). `arm_now` : armée
@@ -137,6 +159,7 @@ impl TriggerEngine {
             armed_lap: None,
             expired: false,
             dropped: 0,
+            base_lap: None,
         });
         if arm_now {
             self.to_arm.push(self.slots.len() - 1);
@@ -202,7 +225,9 @@ impl TriggerEngine {
         let mut out = vec![];
         let pct = s.lap_dist_pct as f64;
         let Some(prev) = self.prev.replace(*s) else {
-            self.base_lap = Some(s.lap);
+            for slot in &mut self.slots {
+                slot.base_lap.get_or_insert(s.lap);
+            }
             return out;
         };
         if !pct.is_finite() || !s.is_on_track {
@@ -210,9 +235,9 @@ impl TriggerEngine {
             return out;
         }
 
-        // Expiration relative à l'activation du plan.
-        let base = *self.base_lap.get_or_insert(s.lap);
+        // Expiration relative à l'activation de chaque consigne.
         for slot in &mut self.slots {
+            let base = *slot.base_lap.get_or_insert(s.lap);
             if let Some(n) = slot.trigger.expire_after_laps
                 && s.lap - base >= n as i32
             {
@@ -556,6 +581,22 @@ mod tests {
         assert_eq!(said.len(), 1);
         assert!(said[0].1 > 0.05, "dite à {}", said[0].1);
         assert_eq!(sim.engine.views()[0].state, TriggerState::Expired);
+    }
+
+    #[test]
+    fn carried_state_keeps_once_triggers_silent() {
+        let mut once = trig("once", 0.2, 5);
+        once.repeat = Repeat::UneFois;
+        let mut sim = Sim::new(TriggerEngine::new(vec![once.clone()], vec![]));
+        sim.run(1, 1.0, &[]);
+        assert_eq!(sim.said().len(), 1);
+        // Plan mis à jour : la même consigne plus une nouvelle.
+        let mut engine = TriggerEngine::new(vec![once, trig("new", 0.5, 5)], vec![]);
+        engine.carry_state_from(&sim.engine);
+        let mut sim2 = Sim::new(engine);
+        sim2.run(1, 1.0, &[]);
+        let ids: Vec<String> = sim2.said().into_iter().map(|x| x.2).collect();
+        assert_eq!(ids, vec!["new"]);
     }
 
     #[test]
