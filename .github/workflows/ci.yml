@@ -22,6 +22,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Rafraîchir sherpa-onnx (bibliothèque téléchargée absente du cache)
+        run: cargo clean -p sherpa-onnx-sys
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -34,5 +36,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Rafraîchir sherpa-onnx (bibliothèque téléchargée absente du cache)
+        run: cargo clean -p sherpa-onnx-sys
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
