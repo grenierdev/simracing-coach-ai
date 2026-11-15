@@ -14,7 +14,9 @@ pub mod synthetic;
 pub mod trace;
 
 pub use corners::{Corner, CornerDetectionParams, Direction, detect_corners};
-pub use hub::{ConnectionState, LiveSnapshot, TelemetryEvent, TelemetryHub, TelemetryHubConfig};
+pub use hub::{
+    ConnectionState, LiveSnapshot, SnapshotHandle, TelemetryEvent, TelemetryHub, TelemetryHubConfig,
+};
 pub use ibt::IbtFile;
 pub use laps::{Lap, LapEvent, LapFlags, LapRecorder, LapRecorderConfig};
 pub use live::LiveSource;

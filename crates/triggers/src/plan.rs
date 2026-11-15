@@ -20,7 +20,8 @@
 //! ```
 
 use analysis::{CornerMetrics, TrackModel};
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -33,7 +34,7 @@ pub enum PlanError {
     Invalid { id: String, msg: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Anchor {
     /// Début du freinage de la référence (début du virage s'il n'y a pas de freinage).
@@ -47,7 +48,7 @@ pub enum Anchor {
     Sortie,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum QuietUntil {
     /// Jusqu'au relâchement du frein.
@@ -59,7 +60,7 @@ pub enum QuietUntil {
     Sortie,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Repeat {
     UneFois,
@@ -69,7 +70,7 @@ pub enum Repeat {
     Tours(u32),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Condition {
     VitesseAuDessusKmh(f64),
@@ -94,7 +95,7 @@ impl Condition {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 pub struct PlanSettings {
     /// Marge de silence avant le point de freinage, m.
     pub marge_silence_m: Option<f64>,
@@ -103,23 +104,34 @@ pub struct PlanSettings {
     pub retard_max_m: Option<f64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Une consigne du plan.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TriggerSpec {
+    /// Identifiant (facultatif) ; une consigne de même id est remplacée.
     pub id: Option<String>,
+    /// Phrase dite au pilote : courte, en français, sans mise en forme.
     pub texte: String,
+    /// Virage de la carte (« T5 »). Ignoré si `position` est donnée.
     pub virage: Option<String>,
+    /// Point du virage servant de repère (défaut : freinage).
     pub ancre: Option<Anchor>,
+    /// Décalage par rapport à l'ancre, m ; négatif = avant (défaut : -150).
     pub decalage_m: Option<f64>,
+    /// Position absolue sur le tour (LapDistPct, 0 à 1).
     pub position: Option<f64>,
+    /// Priorité 0 à 9 (défaut : 5).
     pub priorite: Option<u8>,
+    /// Répétition (défaut : chaque tour).
     pub repetition: Option<Repeat>,
+    /// Condition facultative, évaluée au passage de la position.
     pub condition: Option<Condition>,
     /// Expire après N tours à compter de l'activation du plan.
     pub expire_apres_tours: Option<u32>,
+    /// Distance maximale après la position prévue pour dire la consigne, m.
     pub retard_max_m: Option<f64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 pub struct Plan {
     #[serde(default)]
     pub reglages: PlanSettings,

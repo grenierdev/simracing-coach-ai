@@ -11,11 +11,11 @@ Pipeline vocal : STT → Claude (via ACP) → TTS. Le STT et le TTS tournent dan
 | 1. Télémétrie live, enregistrement des tours, affichage GPUI | **fait** |
 | 2. Tour de référence, alignement, deltas par virage | **fait** |
 | 3. Déclencheurs, consignes statiques, TTS | **fait** |
-| 4. Serveur MCP et client ACP, saisie texte | à faire |
+| 4. Serveur MCP et client ACP, saisie texte | **fait** |
 | 5. STT push-to-talk, conversation vocale | à faire |
 | 6. Planification automatique du tour suivant | à faire |
 
-![Jalon 3 : consignes dites pendant le rejeu synthétique](docs/jalon3.png)
+![Jalon 4 : conversation avec le coach (faux agent) pendant le rejeu synthétique](docs/jalon4.png)
 
 Les conclusions des vérifications préalables (crates, versions, ACP, MCP, authentification, Garage61, STT/TTS, latence) sont dans [docs/verifications.md](docs/verifications.md).
 
@@ -32,11 +32,12 @@ crates/
                silence au freinage), plan TOML, boucle rapide
   voice/       traits Tts et Stt, moteurs sherpa-onnx (Piper, Kokoro, Parakeet),
                sortie audio cpal, thread de parole, téléchargement des modèles
+  mcp/         serveur MCP embarqué (rmcp, HTTP local + jeton) : outils de télémétrie
+  coach/       client ACP : adaptateur Claude en sous-processus, session, latence
   ui/          interface GPUI
   app/         binaire `simcoach` : choix de la source, lancement de l'UI
 ```
 
-Les crates `coach` et `mcp` seront ajoutées au jalon 4.
 
 Boucle rapide : un thread `telemetry` lit la source à 60 Hz, découpe les tours et publie un instantané. L'UI le lit à 30 Hz sans jamais bloquer la boucle. Le thread `coach-fast` reçoit chaque échantillon via `TelemetryHub::subscribe_samples` (file bornée : un abonné lent perd des échantillons au lieu de ralentir la boucle), fait tourner le moteur de consignes et pilote le thread de parole.
 
@@ -57,6 +58,8 @@ La référence se choisit aussi dans l'interface (bouton « Choisir… »).
 ```sh
 simcoach ... --plan plans/synthetique.toml   # plan de consignes
 simcoach ... --no-voice                      # consignes affichées sans être dites
+simcoach ... --model sonnet                  # modèle de la conversation (défaut : haiku)
+simcoach ... --no-agent                      # sans Claude
 ```
 
 En mode `--synthetic`, la référence synthétique et `plans/synthetique.toml` sont chargés par défaut. Le plan se choisit aussi dans l'interface.
@@ -158,3 +161,43 @@ Métriques par virage, pour chaque tour comparé à la référence :
 | Rotation | médiane de `YawRate / (Speed × volant)` au cœur du virage (au moins la moitié du braquage maximal, 15 m retirés aux bords), en entrée et en sortie de la vitesse minimale, rapportée à la référence. Sous 1 : moins de rotation pour le même braquage (sous-virage) ; au-dessus : plus de rotation (survirage) |
 
 La rotation n'a de sens que pour la même voiture que la référence. Quand le `YawRate` de la référence est estimé (CSV sans ce canal), l'interface l'indique : les rapports sont alors indicatifs.
+
+## Claude (ACP et MCP)
+
+Le programme lance l'adaptateur `@agentclientprotocol/claude-agent-acp` (0.107.0) en sous-processus et lui parle en ACP sur stdio. Prérequis :
+
+- s'être connecté une fois au CLI Claude (`claude`, puis `/login`) : le coach utilise l'**abonnement**. `ANTHROPIC_API_KEY` est retirée de l'environnement au démarrage pour que l'adaptateur ne l'utilise pas ;
+- l'adaptateur : par défaut `claude-agent-acp` s'il est dans le PATH (exécutable autonome Windows disponible dans les releases de l'adaptateur), sinon `npx -y @agentclientprotocol/claude-agent-acp@0.107.0` (Node requis). `SIMCOACH_ACP_COMMAND` permet d'indiquer une autre commande.
+
+La session est ouverte au démarrage et gardée chaude :
+
+- prompt système de Claude Code remplacé par celui du coach, lu dans `%LOCALAPPDATA%\simcoach\data\sessions\conversation\CLAUDE.md` (créé au premier lancement depuis `crates/coach/prompts/CLAUDE.md`, modifiable) ;
+- outils intégrés de Claude Code retirés (`tools: []`), seuls nos outils MCP autorisés ; toute autre demande de permission est refusée ;
+- réglages Claude Code du poste ignorés ; réflexion coupée pour la conversation.
+
+Chaque message du pilote est précédé d'un bloc `[Contexte]` : tour, position, dernier et prochain virage, delta live, dernières consignes dites.
+
+Outils MCP exposés (serveur `coach`, HTTP sur `127.0.0.1`, port éphémère, jeton Bearer aléatoire) :
+
+| Outil | Rôle |
+|---|---|
+| `get_session_overview()` | derniers tours, delta à la référence, temps perdu par virage, classé |
+| `get_corner_summary(corner, laps)` | métriques d'un virage par tour face à la référence |
+| `get_corner_trace(corner, channels, lap)` | traces (au plus 100 points par canal), tour et référence |
+| `update_plan(consignes, mode)` | remplace ou complète le plan de consignes (validé avant application) |
+| `say(texte, quand)` | phrase ponctuelle : maintenant, prochaine ligne droite ou position ; toujours soumise à la règle du silence au freinage |
+
+L'interface affiche la conversation, les appels d'outils avec leur durée, et la latence du dernier tour de parole (premier mot) dans l'indicateur « Agent ACP ».
+
+Pour développer sans Claude, un faux agent répond comme le coach (accusé, vrai appel à `get_session_overview`, réponse) :
+
+```sh
+cargo build -p coach --example mock_agent
+SIMCOACH_ACP_COMMAND=target/debug/examples/mock_agent cargo run -p app --bin simcoach -- --synthetic
+```
+
+Pour mesurer la latence réelle de l'adaptateur sur le poste :
+
+```sh
+cargo run -p coach --example probe -- --model haiku --prompt "Bonjour"
+```

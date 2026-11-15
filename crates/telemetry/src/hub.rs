@@ -60,6 +60,16 @@ pub struct TelemetryHubConfig {
     pub corners: CornerDetectionParams,
 }
 
+/// Accès partagé à l'instantané, utilisable depuis d'autres threads.
+#[derive(Clone)]
+pub struct SnapshotHandle(Arc<Mutex<LiveSnapshot>>);
+
+impl SnapshotHandle {
+    pub fn get(&self) -> LiveSnapshot {
+        self.0.lock().unwrap().clone()
+    }
+}
+
 pub struct TelemetryHub {
     snapshot: Arc<Mutex<LiveSnapshot>>,
     events: Receiver<TelemetryEvent>,
@@ -97,6 +107,10 @@ impl TelemetryHub {
 
     pub fn snapshot(&self) -> LiveSnapshot {
         self.snapshot.lock().unwrap().clone()
+    }
+
+    pub fn snapshot_handle(&self) -> SnapshotHandle {
+        SnapshotHandle(self.snapshot.clone())
     }
 
     pub fn events(&self) -> &Receiver<TelemetryEvent> {

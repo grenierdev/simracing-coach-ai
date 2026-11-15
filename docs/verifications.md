@@ -16,7 +16,7 @@ Relevé du 2026-11-15. [V] : vérifié dans le code source ou la documentation. 
 | Prompt système | Prompt du coach injecté en `override` à la place de celui de Claude Code, décidé le 2026-11-15 |
 | Référence | Import manuel du CSV Garage61 ; l'API ne donne pas accès aux tours hors équipe |
 | STT/TTS | **sherpa-onnx 1.13.8** embarqué dans le processus (décidé le 2026-11-15) : Parakeet v3 pour le STT, Piper `fr_FR-siwis` pour le TTS ; Kyutai abandonné. Mesuré : STT 0,2 à 0,4 s, premier son TTS 0,1 à 0,2 s sur CPU |
-| Latence 1,5 s | **À risque**, voir la dernière section |
+| Latence 1,5 s | **Non tenue à froid** : premier mot de Claude mesuré à 1,78 s (Haiku, cloud) ; à remesurer sur le PC, voir la dernière section |
 
 ## 1. Crates pour le SDK iRacing et les .ibt
 
@@ -177,21 +177,34 @@ Parakeet écrit les nombres en chiffres, ce qui facilite le repérage des virage
 
 ## 10. Latence de la conversation
 
-Rien n'est encore mesuré : la mesure se fera au jalon 4, avec les horodatages par étape affichés dans l'UI. Ce qui est établi [V] :
+### Mesure réelle (2026-11-15)
 
-- `session/new` attend l'initialisation complète du CLI. Le démarrage à froid se paie donc à la création de session, d'où l'ouverture des sessions au lancement de l'app.
-- L'adaptateur journalise ses phases (`SessionTiming`), ce qui aidera à ventiler les temps.
+Mesurée avec l'exemple `probe` du crate `coach`, depuis la session cloud, adaptateur 0.107.0, Haiku, réflexion coupée, prompt du coach en `override`, sans outils :
 
-Estimations à confirmer [S] :
+| Étape | Mesure |
+|---|---|
+| Démarrage de l'adaptateur jusqu'à la session prête (`initialize` + `session/new`) | 2,6 s, payé une fois au lancement |
+| Envoi du message → premier `agent_message_chunk` | **1,78 s** |
+| Envoi du message → fin du tour | 2,13 s |
 
-| Étape | Estimation |
+Une seule mesure, à froid (premier message de la session, cache de prompt vide), depuis un conteneur cloud : à refaire sur le PC du pilote, où le réseau et le cache diffèrent. La réponse respectait le prompt du coach (deux phrases, en français, sans mise en forme).
+
+Note : cette mesure n'était pas prévue. L'adaptateur avait été lancé avec un environnement vide pour vérifier seulement `initialize` et `session/new` sans identifiants ; l'infrastructure réseau de la session cloud a authentifié l'appel d'elle-même. Aucun autre appel réel n'a été fait.
+
+### Budget
+
+| Étape | Estimation ou mesure |
 |---|---|
 | STT : du relâchement du bouton au texte final | **mesuré** : 0,2 à 0,4 s (Parakeet v3 int8, CPU) |
-| Claude : du prompt au premier `agent_message_chunk`, Haiku, session chaude | 0,7 à 1,5 s avec prompt en `override` et `tools: []` ; 1,5 à 3 s avec le prompt de Claude Code |
+| Claude : premier mot | **mesuré** : 1,8 s à froid depuis le cloud ; 1 à 1,5 s attendu avec cache chaud |
 | TTS : de la première phrase au premier son | **mesuré** : 0,08 à 0,18 s (Piper, CPU), plus la latence de la sortie audio |
-| **Total** | **1 à 2 s**, selon Claude |
+| **Total** | **2,1 à 2,4 s à froid** ; 1,4 à 2 s attendu avec cache chaud |
 
-La cible de 1,5 s devient plausible avec sherpa-onnx (STT et TTS rapides, sans aller-retour réseau), à condition que Claude réponde vite : prompt en `override`, cache de prompt chaud, Haiku sans réflexion, TTS lancé dès la première phrase. Leviers si ça ne passe pas :
+**La cible de 1,5 s n'est pas tenue** sur la seule mesure disponible ; Claude représente l'essentiel du délai. Leviers, du plus simple au plus lourd :
 
-- envoyer un accusé court local (pré-enregistré) dès la fin de parole ;
-- en dernier recours, appeler l'API Messages directement pour la session de conversation, en gardant ACP pour l'analyse.
+- l'accusé court du coach (« Je regarde le T5. ») est dit dès le premier morceau : il masque la durée des appels d'outils, pas celle du premier mot ;
+- garder la session chaude et le prompt système stable pour profiter du cache de prompt (premier message plus lent que les suivants) ;
+- jouer un accusé local pré-enregistré dès la fin de la parole (« Reçu. »), sans attendre Claude ;
+- en dernier recours, appeler l'API Messages directement pour la conversation, en gardant ACP pour l'analyse.
+
+L'interface affiche la latence du premier mot à chaque tour ; la mesure sur le PC du pilote décidera.

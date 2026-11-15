@@ -1,0 +1,22 @@
+[package]
+name = "coach"
+description = "Client ACP : pilote l'adaptateur Claude, sessions, flux de réponse, latence"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agent-client-protocol.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+agent-client-protocol = { workspace = true, features = ["stdio"] }
+mcp.workspace = true
+telemetry.workspace = true
+analysis.workspace = true
+triggers.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }

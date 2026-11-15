@@ -4,24 +4,29 @@
 //! L'interface ne fait que lire l'instantané publié par le hub de télémétrie,
 //! à ~30 Hz ; elle ne bloque jamais la boucle rapide.
 
+pub mod chat;
 pub mod format;
 pub mod state;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use analysis::CornerComparison;
+use coach::{AgentStatus, CoachAgent};
 use gpui::{
-    App, Bounds, Context, FontWeight, Hsla, IntoElement, PathPromptOptions, Render, SharedString,
-    Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, relative, rgb,
-    size,
+    App, Bounds, Context, FocusHandle, FontWeight, Hsla, IntoElement, KeyDownEvent, MouseButton,
+    PathPromptOptions, Render, SharedString, Task, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, relative, rgb, size,
 };
+use mcp::ToolCallLog;
 use reference::ReferenceLap;
 use telemetry::{ConnectionState, LiveSnapshot, TelemetryHub};
 use triggers::{Plan, RuntimeStatus, TriggerRuntime, TriggerState};
 use voice::{Speaker, SpeakerState, SpeakerStatus};
 
+use crate::chat::{Chat, Who, pilot_context};
 use crate::state::{Comparisons, ReferenceState};
 
 const REFRESH: Duration = Duration::from_millis(33);
@@ -44,8 +49,15 @@ mod theme {
 /// Services démarrés par l'application et pilotés par l'interface.
 pub struct Services {
     pub hub: TelemetryHub,
-    pub coach: TriggerRuntime,
+    pub triggers: Arc<TriggerRuntime>,
     pub speaker: Arc<Speaker>,
+    /// Session de conversation avec Claude (absente avec `--no-agent`).
+    pub agent: Option<Arc<CoachAgent>>,
+    pub mcp_url: Option<String>,
+    pub mcp_error: Option<String>,
+    pub tool_log: Arc<Mutex<VecDeque<ToolCallLog>>>,
+    /// Garde en vie le runtime asynchrone et le serveur MCP.
+    pub keep_alive: Box<dyn std::any::Any>,
 }
 
 pub enum ReferenceSource {
@@ -63,7 +75,7 @@ pub struct StartOptions {
 pub fn run(title: &str, options: StartOptions, make_services: impl FnOnce() -> Services + 'static) {
     let title: SharedString = title.to_string().into();
     gpui_platform::application().run(move |cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1280.), px(860.)), cx);
+        let bounds = Bounds::centered(None, size(px(1320.), px(920.)), cx);
         let services = make_services();
         cx.open_window(
             WindowOptions {
@@ -96,8 +108,15 @@ enum PlanStatus {
 
 pub struct CoachView {
     hub: TelemetryHub,
-    coach: TriggerRuntime,
+    coach: Arc<TriggerRuntime>,
     speaker: Arc<Speaker>,
+    agent: Option<Arc<CoachAgent>>,
+    mcp_url: Option<String>,
+    mcp_error: Option<String>,
+    tool_log: Arc<Mutex<VecDeque<ToolCallLog>>>,
+    chat: Chat,
+    input_focus: FocusHandle,
+    _keep_alive: Box<dyn std::any::Any>,
     snap: LiveSnapshot,
     coach_status: RuntimeStatus,
     speaker_status: SpeakerStatus,
@@ -111,8 +130,13 @@ impl CoachView {
     fn new(services: Services, options: StartOptions, cx: &mut Context<Self>) -> Self {
         let Services {
             hub,
-            coach,
+            triggers: coach,
             speaker,
+            agent,
+            mcp_url,
+            mcp_error,
+            tool_log,
+            keep_alive,
         } = services;
         let refresh = cx.spawn(async move |this, cx| {
             loop {
@@ -121,6 +145,14 @@ impl CoachView {
                     view.snap = view.hub.snapshot();
                     view.coach_status = view.coach.status();
                     view.speaker_status = view.speaker.status();
+                    if let Some(agent) = &view.agent {
+                        while let Ok(e) = agent.events().try_recv() {
+                            view.chat.apply(e);
+                        }
+                    }
+                    let tools: Vec<ToolCallLog> =
+                        view.tool_log.lock().unwrap().iter().cloned().collect();
+                    view.chat.sync_tools(&tools);
                     if let ReferenceStatus::Ready(r) = &view.reference {
                         view.comparisons.update(&view.snap, &r.analyzer);
                     }
@@ -138,6 +170,13 @@ impl CoachView {
             hub,
             coach,
             speaker,
+            agent,
+            mcp_url,
+            mcp_error,
+            tool_log,
+            chat: Chat::default(),
+            input_focus: cx.focus_handle(),
+            _keep_alive: keep_alive,
             reference: ReferenceStatus::None,
             plan: PlanStatus::None,
             comparisons: Comparisons::default(),
@@ -155,6 +194,51 @@ impl CoachView {
             view.load_plan(path, cx);
         }
         view
+    }
+
+    fn send_message(&mut self) {
+        let text = self.chat.input.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let Some(agent) = self.agent.clone() else {
+            self.chat
+                .system_message("Aucun agent : lancer sans --no-agent.");
+            return;
+        };
+        let analyzer = self.ready_reference().map(|r| r.analyzer.clone());
+        let ctx = pilot_context(&self.snap, analyzer.as_deref(), &self.coach_status);
+        let turn = agent.prompt(coach::format_prompt(&ctx, &text));
+        self.chat.pilot_message(&text, turn);
+        self.chat.input.clear();
+    }
+
+    fn on_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &ev.keystroke;
+        let ctrl = ks.modifiers.control || ks.modifiers.platform;
+        match ks.key.as_str() {
+            "enter" => self.send_message(),
+            "escape" => {
+                if let Some(a) = &self.agent {
+                    a.cancel();
+                }
+            }
+            "backspace" => {
+                self.chat.input.pop();
+            }
+            "v" if ctrl => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                    self.chat.input.push_str(&text.replace(['\n', '\r'], " "));
+                }
+            }
+            _ if !ctrl => {
+                if let Some(c) = &ks.key_char {
+                    self.chat.input.push_str(c);
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
     }
 
     fn set_reference(&mut self, state: ReferenceState) {
@@ -387,8 +471,116 @@ impl CoachView {
             .child(status_pill("Télémétrie", c, detail))
             .child(status_pill("STT", theme::IDLE, "jalon 5"))
             .child(self.render_tts_pill())
-            .child(status_pill("Agent ACP", theme::IDLE, "jalon 4"))
-            .child(status_pill("Serveur MCP", theme::IDLE, "jalon 4"))
+            .child(self.render_agent_pill())
+            .child(match (&self.mcp_url, &self.mcp_error) {
+                (Some(url), _) => status_pill("Serveur MCP", theme::OK, url.clone()),
+                (None, Some(e)) => status_pill("Serveur MCP", theme::ERR, e.clone()),
+                (None, None) => status_pill("Serveur MCP", theme::IDLE, "arrêté"),
+            })
+    }
+
+    fn render_agent_pill(&self) -> gpui::Div {
+        let latency = self
+            .chat
+            .last_latency
+            .and_then(|l| l.first_chunk_ms)
+            .map(|ms| format!(" · premier mot {:.2} s", ms / 1000.0))
+            .unwrap_or_default();
+        let (c, detail): (u32, String) = match (&self.agent, &self.chat.status) {
+            (None, _) => (theme::IDLE, "désactivé".into()),
+            (Some(_), None | Some(AgentStatus::Starting)) => (theme::WARN, "démarrage".into()),
+            (Some(a), Some(AgentStatus::Ready { .. })) => {
+                (theme::OK, format!("{}{latency}", a.label()))
+            }
+            (Some(_), Some(AgentStatus::Busy)) => (theme::WARN, format!("réfléchit{latency}")),
+            (Some(_), Some(AgentStatus::Failed(e))) => (theme::ERR, e.clone()),
+            (Some(_), Some(AgentStatus::Stopped)) => (theme::IDLE, "arrêté".into()),
+        };
+        status_pill("Agent ACP", c, detail)
+    }
+
+    fn render_chat(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let entries = self.chat.entries.iter().rev().take(40).rev().map(|e| {
+            let (who, tone) = match e.who {
+                Who::Pilote => ("Pilote", theme::BEST),
+                Who::Coach => ("Coach", theme::TEXT),
+                Who::Outil => ("outil", theme::MUTED),
+                Who::Systeme => ("", theme::WARN),
+            };
+            let small = matches!(e.who, Who::Outil | Who::Systeme);
+            div()
+                .flex()
+                .w_full()
+                .gap_2()
+                .when(small, |d| d.text_xs())
+                .when(!small, |d| d.text_sm())
+                .child(
+                    div()
+                        .w(px(48.))
+                        .flex_none()
+                        .text_color(color(theme::MUTED))
+                        .child(who),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .text_color(color(tone))
+                        .child(e.text.clone()),
+                )
+        });
+        let focused = self.input_focus.is_focused(window);
+        let placeholder = self.chat.input.is_empty();
+        let input_text = if placeholder {
+            "Écrire au coach… (Entrée : envoyer, Échap : interrompre)".to_string()
+        } else if focused {
+            format!("{}▏", self.chat.input)
+        } else {
+            self.chat.input.clone()
+        };
+        let input = div()
+            .id("chat-input")
+            .track_focus(&self.input_focus)
+            .on_key_down(cx.listener(Self::on_key))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| window.focus(&view.input_focus, cx)),
+            )
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(color(if focused { theme::BEST } else { theme::BORDER }))
+            .bg(color(theme::BG))
+            .text_sm()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .text_color(color(if placeholder {
+                theme::MUTED
+            } else {
+                theme::TEXT
+            }))
+            .child(input_text);
+        panel("Conversation")
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("chat-log")
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(entries),
+            )
+            .child(input)
     }
 
     fn render_tts_pill(&self) -> gpui::Div {
@@ -984,7 +1176,7 @@ impl CoachView {
 }
 
 impl Render for CoachView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -1009,7 +1201,14 @@ impl Render for CoachView {
                             .gap_3()
                             .min_h_0()
                             .child(self.render_session(cx))
-                            .child(div().flex_1().flex().min_h_0().child(self.render_laps())),
+                            .child(div().h(px(150.)).flex().child(self.render_laps()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .min_h_0()
+                                    .child(self.render_chat(window, cx)),
+                            ),
                     )
                     // Colonne de droite : live, virages, consignes.
                     .child(

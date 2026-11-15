@@ -87,6 +87,8 @@ pub struct TriggerEngine {
     quiet: Vec<QuietZone>,
     pending: Vec<Pending>,
     prev: Option<Sample>,
+    /// Consignes injectées à armer au prochain échantillon.
+    to_arm: Vec<usize>,
     base_lap: Option<i32>,
     stop_sent: bool,
 }
@@ -118,8 +120,26 @@ impl TriggerEngine {
             quiet,
             pending: vec![],
             prev: None,
+            to_arm: vec![],
             base_lap: None,
             stop_sent: false,
+        }
+    }
+
+    /// Ajoute une consigne ponctuelle (dite une seule fois). `arm_now` : armée
+    /// tout de suite à la position courante, sinon au passage de `at_pct`.
+    pub fn inject(&mut self, mut trigger: Trigger, arm_now: bool) {
+        trigger.repeat = Repeat::UneFois;
+        self.slots.push(Slot {
+            trigger,
+            times_spoken: 0,
+            last_spoken_lap: None,
+            armed_lap: None,
+            expired: false,
+            dropped: 0,
+        });
+        if arm_now {
+            self.to_arm.push(self.slots.len() - 1);
         }
     }
 
@@ -216,6 +236,15 @@ impl TriggerEngine {
             }
         } else if !ctx.speaking {
             self.stop_sent = false;
+        }
+
+        // Consignes injectées : armées à la position courante.
+        for i in std::mem::take(&mut self.to_arm) {
+            self.slots[i].armed_lap = Some(s.lap);
+            self.pending.push(Pending {
+                slot: i,
+                armed_pct: pct,
+            });
         }
 
         // Armement des consignes franchies.
@@ -509,6 +538,24 @@ mod tests {
         let mut sim = Sim::new(TriggerEngine::new(vec![t], vec![]));
         sim.run(4, 1.0, &[]);
         assert_eq!(sim.said().len(), 2);
+    }
+
+    #[test]
+    fn injected_message_waits_for_end_of_braking() {
+        let mut engine = TriggerEngine::new(vec![], vec![]);
+        let mut injected = trig("say", f64::NAN, 9);
+        injected.max_delay_pct = 0.3;
+        let mut sim = Sim::new(engine);
+        // Un premier tour pour avoir un échantillon, puis injection pendant un freinage.
+        sim.run(1, 1.0, &[]);
+        engine = std::mem::replace(&mut sim.engine, TriggerEngine::new(vec![], vec![]));
+        engine.inject(injected, true);
+        sim.engine = engine;
+        sim.run(1, 1.0, &[(0.0, 0.05)]);
+        let said = sim.said();
+        assert_eq!(said.len(), 1);
+        assert!(said[0].1 > 0.05, "dite à {}", said[0].1);
+        assert_eq!(sim.engine.views()[0].state, TriggerState::Expired);
     }
 
     #[test]

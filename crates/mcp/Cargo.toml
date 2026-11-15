@@ -1,0 +1,24 @@
+[package]
+name = "mcp"
+description = "Serveur MCP embarqué : outils de télémétrie exposés à Claude"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+telemetry.workspace = true
+analysis.workspace = true
+triggers.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+axum.workspace = true
+getrandom.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+reqwest = { version = "0.13", default-features = false }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }

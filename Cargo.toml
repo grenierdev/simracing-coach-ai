@@ -6,6 +6,8 @@ members = [
     "crates/analysis",
     "crates/triggers",
     "crates/voice",
+    "crates/mcp",
+    "crates/coach",
     "crates/ui",
     "crates/app",
 ]
@@ -41,6 +43,15 @@ cpal = "0.18"
 # d'entreprise qui inspecte le TLS.
 ureq = { version = "3.5", features = ["json", "platform-verifier"] }
 serde_json = "1.0"
+schemars = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+futures = "0.3"
+getrandom = "0.4"
+rmcp = { version = "3.10", features = ["server", "macros", "transport-streamable-http-server"] }
+agent-client-protocol = { version = "5.3", features = ["process"] }
+mcp = { path = "crates/mcp" }
+coach = { path = "crates/coach" }
 directories = "6.0"
 # Épinglé en 1.x : la 2.x n'embarque plus espeak-ng pour Piper (voir docs/verifications.md).
 sherpa-onnx = { version = "=1.13.8", default-features = false }

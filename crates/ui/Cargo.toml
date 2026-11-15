@@ -12,6 +12,8 @@ reference.workspace = true
 analysis.workspace = true
 triggers.workspace = true
 voice.workspace = true
+coach.workspace = true
+mcp.workspace = true
 gpui.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

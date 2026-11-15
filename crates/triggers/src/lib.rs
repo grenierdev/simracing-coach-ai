@@ -12,6 +12,7 @@ pub mod runtime;
 
 pub use engine::{Command, StopReason, TickContext, TriggerEngine, TriggerState, TriggerView};
 pub use plan::{
-    Anchor, Condition, Plan, PlanError, QuietZone, Repeat, TrackContext, Trigger, resolve,
+    Anchor, Condition, Plan, PlanError, QuietZone, Repeat, TrackContext, Trigger, TriggerSpec,
+    resolve,
 };
-pub use runtime::{LogEntry, RuntimeStatus, SpeechOutput, TriggerRuntime};
+pub use runtime::{LogEntry, RuntimeStatus, SayWhen, SpeechOutput, TriggerRuntime};

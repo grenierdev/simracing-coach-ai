@@ -8,11 +8,14 @@
 //! simcoach ... --reference ref.csv  tour de référence (CSV Garage61 ou .ibt)
 //! simcoach ... --plan plan.toml     plan de consignes
 //! simcoach ... --no-voice           consignes affichées sans être dites
+//! simcoach ... --no-agent           sans Claude (pas d'adaptateur ACP)
+//! simcoach ... --model sonnet       modèle de la conversation (défaut : haiku)
 //! simcoach --write-synthetic f.ibt écrit la session synthétique dans un fichier
 //! simcoach --write-synthetic-reference <dossier>
 //!                                  écrit un tour de référence synthétique (CSV Garage61)
 //! ```
 
+mod agent;
 mod speech;
 
 use std::path::PathBuf;
@@ -29,6 +32,8 @@ struct Args {
     reference: Option<PathBuf>,
     plan: Option<PathBuf>,
     no_voice: bool,
+    no_agent: bool,
+    model: Option<String>,
     synthetic: bool,
     write_synthetic: Option<PathBuf>,
     write_synthetic_reference: Option<PathBuf>,
@@ -48,6 +53,13 @@ fn parse_args() -> anyhow::Result<Args> {
             "--synthetic" => args.synthetic = true,
             "--plan" => args.plan = Some(it.next().context("--plan <fichier.toml>")?.into()),
             "--no-voice" => args.no_voice = true,
+            "--no-agent" => args.no_agent = true,
+            "--model" => {
+                args.model = Some(
+                    it.next()
+                        .context("--model <haiku|sonnet|opus|identifiant>")?,
+                )
+            }
             "--reference" => {
                 args.reference = Some(
                     it.next()
@@ -76,7 +88,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--loop" => args.looping = true,
             "-h" | "--help" => {
                 println!(
-                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--reference fichier.csv|.ibt] [--plan plan.toml] [--no-voice] [--write-synthetic fichier.ibt] [--write-synthetic-reference dossier]"
+                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--reference fichier.csv|.ibt] [--plan plan.toml] [--no-voice] [--no-agent] [--model haiku] [--write-synthetic fichier.ibt] [--write-synthetic-reference dossier]"
                 );
                 std::process::exit(0);
             }
@@ -87,6 +99,14 @@ fn parse_args() -> anyhow::Result<Args> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Claude passe par l'abonnement du CLI : une clé API dans l'environnement
+    // serait utilisée (et facturée) à sa place par l'adaptateur. Retirée avant
+    // tout démarrage de thread.
+    if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
+        // SAFETY : aucun autre thread n'existe encore.
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+        eprintln!("ANTHROPIC_API_KEY ignorée : le coach utilise l'abonnement du CLI Claude.");
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -147,6 +167,10 @@ fn main() -> anyhow::Result<()> {
         (args.synthetic && demo.exists()).then_some(demo)
     });
     let no_voice = args.no_voice;
+    let agent_options = agent::AgentOptions {
+        enabled: !args.no_agent,
+        model: args.model.clone().unwrap_or_else(|| "haiku".into()),
+    };
 
     ui::run(
         "Coach simracing",
@@ -154,14 +178,20 @@ fn main() -> anyhow::Result<()> {
         move || {
             let hub = TelemetryHub::spawn(source, TelemetryHubConfig::default());
             let speaker = speech::start_speaker(no_voice);
-            let coach = triggers::TriggerRuntime::spawn(
+            let triggers = std::sync::Arc::new(triggers::TriggerRuntime::spawn(
                 hub.subscribe_samples(),
                 Box::new(speech::SpeakerOutput(speaker.clone())),
-            );
+            ));
+            let agent = agent::start(hub.snapshot_handle(), triggers.clone(), &agent_options);
             ui::Services {
                 hub,
-                coach,
+                triggers,
                 speaker,
+                agent: agent.agent,
+                mcp_url: agent.mcp_url,
+                mcp_error: agent.mcp_error,
+                tool_log: agent.tool_log,
+                keep_alive: agent.keep_alive,
             }
         },
     );

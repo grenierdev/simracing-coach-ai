@@ -15,7 +15,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError};
 use telemetry::{LapEvent, LapRecorder, Sample};
 
 use crate::engine::{Command, TickContext, TriggerEngine, TriggerView};
-use crate::plan::{Plan, TrackContext, resolve};
+use crate::plan::{Plan, TrackContext, Trigger, TriggerSpec, resolve};
 
 /// Sortie vocale vue par le moteur. Implémentée par le crate `voice` (via
 /// l'application) ; un faux en test.
@@ -47,10 +47,22 @@ pub struct RuntimeStatus {
     pub quiet_zones: usize,
 }
 
+/// Quand dire une phrase injectée.
+#[derive(Debug, Clone)]
+pub enum SayWhen {
+    /// Dès que possible (priorité maximale), en respectant les zones de silence.
+    Now,
+    /// Sur la prochaine portion où la phrase a le temps d'être dite.
+    NextStraight,
+    /// À une position du tour (virage + ancre + décalage, ou position absolue).
+    At(Box<TriggerSpec>),
+}
+
 struct Shared {
     analyzer: Option<Arc<Analyzer>>,
     plan: Option<(String, Plan)>,
     dirty: bool,
+    injections: Vec<(String, SayWhen)>,
     status: RuntimeStatus,
 }
 
@@ -68,6 +80,7 @@ impl TriggerRuntime {
             analyzer: None,
             plan: None,
             dirty: true,
+            injections: vec![],
             status: RuntimeStatus::default(),
         }));
         let stop = Arc::new(AtomicBool::new(false));
@@ -98,6 +111,25 @@ impl TriggerRuntime {
         s.dirty = true;
     }
 
+    /// Plan courant (nom et contenu).
+    pub fn current_plan(&self) -> Option<(String, Plan)> {
+        self.shared.lock().unwrap().plan.clone()
+    }
+
+    /// Carte de la piste courante (référence chargée).
+    pub fn analyzer(&self) -> Option<Arc<Analyzer>> {
+        self.shared.lock().unwrap().analyzer.clone()
+    }
+
+    /// Programme une phrase ponctuelle.
+    pub fn say(&self, text: impl Into<String>, when: SayWhen) {
+        self.shared
+            .lock()
+            .unwrap()
+            .injections
+            .push((text.into(), when));
+    }
+
     pub fn status(&self) -> RuntimeStatus {
         self.shared.lock().unwrap().status.clone()
     }
@@ -114,8 +146,10 @@ impl Drop for TriggerRuntime {
 
 fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(TriggerEngine, f64)> {
     shared.dirty = false;
-    let (name, plan) = shared.plan.as_ref()?;
-    shared.status.plan_name = Some(name.clone());
+    // Sans plan, un moteur vide sert quand même aux phrases injectées.
+    let empty = (String::new(), Plan::default());
+    let (name, plan) = shared.plan.as_ref().unwrap_or(&empty);
+    shared.status.plan_name = shared.plan.as_ref().map(|_| name.clone());
     let ctx = shared.analyzer.as_ref().map(|a| TrackContext {
         model: &a.model,
         reference: &a.reference_metrics,
@@ -147,6 +181,47 @@ fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(Trigge
     }
 }
 
+/// Consigne ponctuelle correspondant à une phrase injectée.
+fn injected_trigger(
+    text: &str,
+    when: &SayWhen,
+    analyzer: Option<&Analyzer>,
+    counter: &mut u32,
+) -> Result<(Trigger, bool), String> {
+    *counter += 1;
+    let id = format!("say-{counter}");
+    let base = |priority: u8, max_delay_pct: f64| Trigger {
+        id: id.clone(),
+        text: text.trim().to_string(),
+        at_pct: f64::NAN,
+        corner: None,
+        priority,
+        repeat: crate::plan::Repeat::UneFois,
+        condition: None,
+        expire_after_laps: None,
+        max_delay_pct,
+    };
+    match when {
+        SayWhen::Now => Ok((base(9, 0.25), true)),
+        SayWhen::NextStraight => Ok((base(6, 0.6), true)),
+        SayWhen::At(spec) => {
+            let mut spec = (**spec).clone();
+            spec.texte = text.to_string();
+            spec.id = Some(id.clone());
+            let plan = Plan {
+                consignes: vec![spec],
+                ..Default::default()
+            };
+            let ctx = analyzer.map(|a| TrackContext {
+                model: &a.model,
+                reference: &a.reference_metrics,
+            });
+            let mut t = resolve(&plan, ctx.as_ref()).map_err(|e| e.to_string())?;
+            Ok((t.remove(0), false))
+        }
+    }
+}
+
 fn run(
     samples: Receiver<Sample>,
     mut speech: Box<dyn SpeechOutput>,
@@ -158,6 +233,7 @@ fn run(
     let mut laps = LapRecorder::default();
     let mut log: VecDeque<LogEntry> = VecDeque::with_capacity(LOG_LEN);
     let mut ticks: u32 = 0;
+    let mut injected: u32 = 0;
 
     while !stop.load(Ordering::Relaxed) {
         {
@@ -165,6 +241,18 @@ fn run(
             if s.dirty {
                 analyzer = s.analyzer.clone();
                 engine = rebuild(&mut s, speech.as_mut());
+            }
+            if let Some((eng, _)) = engine.as_mut() {
+                for (text, when) in std::mem::take(&mut s.injections) {
+                    match injected_trigger(&text, &when, analyzer.as_deref(), &mut injected) {
+                        Ok((t, arm_now)) => {
+                            speech.prepare(std::slice::from_ref(&t.text));
+                            eng.inject(t, arm_now);
+                        }
+                        Err(e) => tracing::warn!("phrase injectée refusée : {e}"),
+                    }
+                }
+                s.status.triggers = eng.views();
             }
         }
         let sample = match samples.recv_timeout(Duration::from_millis(100)) {
@@ -319,6 +407,29 @@ mod tests {
         assert!(status.plan_error.is_none());
         assert_eq!(status.log.len(), 3);
         assert!(status.quiet_zones >= 3);
+    }
+
+    #[test]
+    fn say_now_without_plan_is_spoken() {
+        let (tx, rx) = bounded(10_000);
+        let fake = FakeSpeech::default();
+        let rt = TriggerRuntime::spawn(rx, Box::new(fake.clone()));
+        std::thread::sleep(Duration::from_millis(150));
+        rt.say("Je regarde le T5.", SayWhen::Now);
+        for i in 0..120 {
+            let s = Sample {
+                session_time: i as f64 / 60.0,
+                lap: 1,
+                lap_dist_pct: 0.1 + i as f32 * 0.001,
+                speed: 50.0,
+                is_on_track: true,
+                ..Default::default()
+            };
+            tx.send(s).unwrap();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(*fake.said.lock().unwrap(), vec!["Je regarde le T5."]);
     }
 
     #[test]
