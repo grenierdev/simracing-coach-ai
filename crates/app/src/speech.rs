@@ -44,6 +44,32 @@ fn make_tts(_no_voice: bool, _report: &dyn Fn(String)) -> Result<Box<dyn Tts>, v
     Ok(Box::new(SilentTts::default()))
 }
 
+/// Reconnaissance vocale : Parakeet v3, téléchargé au premier lancement (~670 Mo).
+pub fn start_listener() -> voice::Listener {
+    voice::Listener::spawn(make_stt)
+}
+
+#[cfg(feature = "voice-sherpa")]
+fn make_stt(report: &dyn Fn(String)) -> Result<Box<dyn voice::Stt>, voice::VoiceError> {
+    use voice::models::{PARAKEET_V3_INT8, ensure, models_dir};
+    let dir = models_dir();
+    let path = ensure(&PARAKEET_V3_INT8, &dir, |done, total| {
+        let pct = (done * 100).checked_div(total).unwrap_or(0);
+        report(format!(
+            "téléchargement de la reconnaissance vocale : {pct} %"
+        ));
+    })?;
+    report("chargement de la reconnaissance vocale".into());
+    Ok(Box::new(voice::sherpa::SherpaStt::parakeet(&path, 2)?))
+}
+
+#[cfg(not(feature = "voice-sherpa"))]
+fn make_stt(_report: &dyn Fn(String)) -> Result<Box<dyn voice::Stt>, voice::VoiceError> {
+    Err(voice::VoiceError::Engine(
+        "reconnaissance vocale non compilée (feature sherpa)".into(),
+    ))
+}
+
 /// Le moteur de consignes parle à travers ce trait.
 pub struct SpeakerOutput(pub Arc<Speaker>);
 

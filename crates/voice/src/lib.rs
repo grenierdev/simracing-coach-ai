@@ -10,15 +10,19 @@
 //! - [`models`] : téléchargement des modèles depuis Hugging Face ;
 //! - `sherpa` (feature) : moteurs sherpa-onnx.
 
+pub mod listener;
 pub mod models;
 pub mod output;
+pub mod recorder;
 #[cfg(feature = "sherpa")]
 pub mod sherpa;
 pub mod speaker;
 
 use thiserror::Error;
 
+pub use listener::{Listener, ListenerStatus, Transcript};
 pub use output::{AudioSink, CpalSink, NullSink};
+pub use recorder::{Microphone, Recorder};
 pub use speaker::{Speaker, SpeakerState, SpeakerStatus};
 
 #[derive(Debug, Error)]

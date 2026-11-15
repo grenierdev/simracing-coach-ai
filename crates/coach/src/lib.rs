@@ -14,6 +14,7 @@
 //! - abonnement du CLI : `ANTHROPIC_API_KEY` n'est pas transmise.
 
 pub mod context;
+pub mod speech;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -35,6 +36,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 pub use context::{PilotContext, format_prompt};
+pub use speech::SentenceSplitter;
 
 /// Prompt système par défaut du coach (copié en `CLAUDE.md` dans le dossier de session).
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/CLAUDE.md");

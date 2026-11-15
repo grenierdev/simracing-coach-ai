@@ -183,10 +183,45 @@ fn main() -> anyhow::Result<()> {
                 Box::new(speech::SpeakerOutput(speaker.clone())),
             ));
             let agent = agent::start(hub.snapshot_handle(), triggers.clone(), &agent_options);
+            let settings = ui::settings::Settings::load();
+            let input = std::sync::Arc::new(input::InputService::spawn());
+            input.set_ptt(settings.ptt.clone());
+            let recorder: Option<std::sync::Arc<voice::Recorder>> = match voice::Recorder::open() {
+                Ok(r) => {
+                    tracing::info!("micro : {}", r.device());
+                    Some(std::sync::Arc::new(r))
+                }
+                Err(e) => {
+                    tracing::warn!("{e} : push-to-talk indisponible");
+                    None
+                }
+            };
+            let mic_name = recorder.as_ref().map(|r| r.device().to_string());
+            let listener = std::sync::Arc::new(speech::start_listener());
+            let conversation = ui::conversation::Conversation::spawn(
+                ui::conversation::ConversationDeps {
+                    agent: agent.agent.clone(),
+                    speaker: speaker.clone(),
+                    triggers: triggers.clone(),
+                    snapshot: hub.snapshot_handle(),
+                    input: Some(input.clone()),
+                    recorder: recorder
+                        .clone()
+                        .map(|r| r as std::sync::Arc<dyn voice::Microphone>),
+                    listener: Some(listener.clone()),
+                },
+                settings.speak_replies,
+            );
             ui::Services {
                 hub,
                 triggers,
                 speaker,
+                conversation,
+                input: Some(input),
+                listener: Some(listener),
+                recorder,
+                mic_name,
+                settings,
                 agent: agent.agent,
                 mcp_url: agent.mcp_url,
                 mcp_error: agent.mcp_error,

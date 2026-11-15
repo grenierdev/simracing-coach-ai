@@ -27,6 +27,7 @@ voice.workspace = true
 analysis.workspace = true
 mcp.workspace = true
 coach.workspace = true
+input.workspace = true
 tokio.workspace = true
 directories.workspace = true
 anyhow.workspace = true

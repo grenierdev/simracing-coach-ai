@@ -8,6 +8,7 @@ members = [
     "crates/voice",
     "crates/mcp",
     "crates/coach",
+    "crates/input",
     "crates/ui",
     "crates/app",
 ]
@@ -52,6 +53,9 @@ rmcp = { version = "3.10", features = ["server", "macros", "transport-streamable
 agent-client-protocol = { version = "5.3", features = ["process"] }
 mcp = { path = "crates/mcp" }
 coach = { path = "crates/coach" }
+input = { path = "crates/input" }
+device_query = "4.0"
+gilrs = "0.11"
 directories = "6.0"
 # Épinglé en 1.x : la 2.x n'embarque plus espeak-ng pour Piper (voir docs/verifications.md).
 sherpa-onnx = { version = "=1.13.8", default-features = false }

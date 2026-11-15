@@ -175,7 +175,15 @@ Parakeet écrit les nombres en chiffres, ce qui facilite le repérage des virage
 - Les téléchargements utilisent le magasin de certificats du système (`ureq` avec `platform-verifier`) plutôt qu'une liste intégrée : ils passent derrière un proxy d'entreprise qui inspecte le TLS. Vérifié depuis la session cloud, qui passe par un tel proxy.
 - Windows : la bibliothèque statique est compilée avec le runtime C statique (`/MT`) ; `.cargo/config.toml` active `+crt-static` pour la cible MSVC. Vérifié : la CI Windows compile, lie et passe les tests avec la bibliothèque statique (run du 2026-11-15, commit 08e9af8).
 
-## 10. Latence de la conversation
+## 10. Entrées : push-to-talk en arrière-plan
+
+- [V] `gilrs` 0.11 utilise par défaut Windows Gaming Input, qui « requires an in focus window to be associated with the process to receive events » (README de gilrs). Inutilisable pendant qu'iRacing a le focus. Son backend XInput fonctionne en arrière-plan mais ne voit que les manettes Xbox, pas les volants.
+- Retenu sous Windows : **DirectInput 8**, coopération `DISCL_BACKGROUND | DISCL_NONEXCLUSIVE`, sur une fenêtre cachée de premier niveau. Classe `DI8DEVCLASS_GAMECTRL` (volants, pédaliers, boîtiers, joysticks, manettes). La crate `windows` n'expose pas le format prédéfini `c_dfDIJoystick2` : format maison de 128 boutons et 4 chapeaux, tous facultatifs.
+- Clavier et souris : `device_query` (`GetAsyncKeyState` sous Windows, X11 sous Linux), lecture globale indépendante du focus.
+- Linux (développement) : `gilrs` (evdev, fonctionne en arrière-plan).
+- Vérifié : la capture et le suivi du push-to-talk fonctionnent avec le vrai clavier (X11, sous Xvfb + xdotool) ; le code DirectInput se compile et passe clippy pour la cible Windows. **Non vérifié** sur un vrai volant ou boîtier : à tester sur le PC.
+
+## 11. Latence de la conversation
 
 ### Mesure réelle (2026-11-15)
 

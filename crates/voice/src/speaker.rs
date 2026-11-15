@@ -31,6 +31,8 @@ pub struct SpeakerStatus {
     pub last_synthesis_ms: Option<f64>,
     /// De la demande à la mise en file audio, ms.
     pub last_latency_ms: Option<f64>,
+    /// Instant de la dernière mise en file audio (premier son d'une phrase).
+    pub last_play_at: Option<Instant>,
     pub cached: usize,
 }
 
@@ -123,6 +125,7 @@ impl Speaker {
                                     let mut s = status.lock().unwrap();
                                     s.last_synthesis_ms = synth_ms;
                                     s.last_latency_ms = Some(asked.elapsed().as_secs_f64() * 1e3);
+                                    s.last_play_at = Some(Instant::now());
                                 }
                                 pending.store(false, Ordering::Release);
                             }

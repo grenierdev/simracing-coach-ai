@@ -12,10 +12,10 @@ Pipeline vocal : STT → Claude (via ACP) → TTS. Le STT et le TTS tournent dan
 | 2. Tour de référence, alignement, deltas par virage | **fait** |
 | 3. Déclencheurs, consignes statiques, TTS | **fait** |
 | 4. Serveur MCP et client ACP, saisie texte | **fait** |
-| 5. STT push-to-talk, conversation vocale | à faire |
+| 5. STT push-to-talk, conversation vocale | **fait** |
 | 6. Planification automatique du tour suivant | à faire |
 
-![Jalon 4 : conversation avec le coach (faux agent) pendant le rejeu synthétique](docs/jalon4.png)
+![Jalon 5 : push-to-talk réglé sur F9, conversation avec le coach](docs/jalon5.png)
 
 Les conclusions des vérifications préalables (crates, versions, ACP, MCP, authentification, Garage61, STT/TTS, latence) sont dans [docs/verifications.md](docs/verifications.md).
 
@@ -33,7 +33,10 @@ crates/
   voice/       traits Tts et Stt, moteurs sherpa-onnx (Piper, Kokoro, Parakeet),
                sortie audio cpal, thread de parole, téléchargement des modèles
   mcp/         serveur MCP embarqué (rmcp, HTTP local + jeton) : outils de télémétrie
-  coach/       client ACP : adaptateur Claude en sous-processus, session, latence
+  coach/       client ACP : adaptateur Claude en sous-processus, session, latence,
+               découpage de la réponse en phrases
+  input/       clavier, souris, volants, boîtiers, manettes lus en arrière-plan ;
+               capture de liaison, push-to-talk
   ui/          interface GPUI
   app/         binaire `simcoach` : choix de la source, lancement de l'UI
 ```
@@ -113,7 +116,8 @@ Rust 1.88 ou plus récent.
 
   ```sh
   sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
-    libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1 libasound2-dev
+    libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1 libasound2-dev \
+    libudev-dev libx11-dev
   ```
 
 ```sh
@@ -201,3 +205,21 @@ Pour mesurer la latence réelle de l'adaptateur sur le poste :
 ```sh
 cargo run -p coach --example probe -- --model haiku --prompt "Bonjour"
 ```
+
+## Conversation vocale (push-to-talk)
+
+Le bouton de push-to-talk se règle dans l'interface, comme dans un jeu : « Modifier… », puis appuyer sur n'importe quelle touche, bouton de souris (sauf le clic gauche), bouton de volant, de boîtier, de joystick ou de manette, ou direction d'un chapeau (POV). Échap annule. Le réglage est enregistré dans `%APPDATA%\simcoach\config\settings.toml` (`SIMCOACH_SETTINGS` pour un autre fichier).
+
+Les entrées sont lues **en arrière-plan**, pendant qu'iRacing a le focus :
+
+- clavier et souris : état global (`GetAsyncKeyState` via `device_query`) ;
+- volants, pédaliers, boîtiers, joysticks, manettes : DirectInput 8 en mode arrière-plan non exclusif, comme iRacing. Windows Gaming Input (utilisé par défaut par `gilrs`) n'a pas été retenu : il exige que la fenêtre de l'application ait le focus. Un périphérique branché en cours de route est détecté en deux secondes ; si l'identifiant d'instance change (autre port USB), le nom du produit suffit à retrouver le bouton.
+
+Déroulé :
+
+1. appui : le coach se tait, sa réponse en cours est interrompue, le micro enregistre (300 ms de pré-enregistrement pour ne pas couper la première syllabe) ;
+2. relâchement : transcription par Parakeet (téléchargé au premier lancement, environ 670 Mo) ;
+3. le texte part à Claude avec le contexte du pilote ;
+4. la réponse est découpée en phrases au fil de l'eau ; chaque phrase est dite dès qu'elle est complète, via le moteur de consignes, donc jamais en zone de freinage. « Réponses dites : non » coupe la voix des réponses (le texte reste affiché).
+
+L'interface affiche la latence du dernier tour vocal : fin de parole → texte → premier mot de Claude → premier son.

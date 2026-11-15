@@ -5,7 +5,9 @@
 //! à ~30 Hz ; elle ne bloque jamais la boucle rapide.
 
 pub mod chat;
+pub mod conversation;
 pub mod format;
+pub mod settings;
 pub mod state;
 
 use std::collections::VecDeque;
@@ -26,8 +28,12 @@ use telemetry::{ConnectionState, LiveSnapshot, TelemetryHub};
 use triggers::{Plan, RuntimeStatus, TriggerRuntime, TriggerState};
 use voice::{Speaker, SpeakerState, SpeakerStatus};
 
-use crate::chat::{Chat, Who, pilot_context};
+use crate::chat::{Chat, Who};
+use crate::conversation::{ConvEvent, Conversation, VoiceLatency};
+use crate::settings::Settings;
 use crate::state::{Comparisons, ReferenceState};
+use input::{CaptureResult, InputService};
+use voice::{Listener, Recorder};
 
 const REFRESH: Duration = Duration::from_millis(33);
 
@@ -58,6 +64,13 @@ pub struct Services {
     pub tool_log: Arc<Mutex<VecDeque<ToolCallLog>>>,
     /// Garde en vie le runtime asynchrone et le serveur MCP.
     pub keep_alive: Box<dyn std::any::Any>,
+    /// Boucle de conversation (push-to-talk, STT, réponses dites).
+    pub conversation: Conversation,
+    pub input: Option<Arc<InputService>>,
+    pub listener: Option<Arc<Listener>>,
+    pub recorder: Option<Arc<Recorder>>,
+    pub mic_name: Option<String>,
+    pub settings: Settings,
 }
 
 pub enum ReferenceSource {
@@ -117,6 +130,15 @@ pub struct CoachView {
     chat: Chat,
     input_focus: FocusHandle,
     _keep_alive: Box<dyn std::any::Any>,
+    conversation: Conversation,
+    input: Option<Arc<InputService>>,
+    listener: Option<Arc<Listener>>,
+    recorder: Option<Arc<Recorder>>,
+    mic_name: Option<String>,
+    settings: Settings,
+    capture: Option<crossbeam_channel::Receiver<CaptureResult>>,
+    recording: bool,
+    voice_latency: Option<VoiceLatency>,
     snap: LiveSnapshot,
     coach_status: RuntimeStatus,
     speaker_status: SpeakerStatus,
@@ -137,6 +159,12 @@ impl CoachView {
             mcp_error,
             tool_log,
             keep_alive,
+            conversation,
+            input,
+            listener,
+            recorder,
+            mic_name,
+            settings,
         } = services;
         let refresh = cx.spawn(async move |this, cx| {
             loop {
@@ -145,9 +173,22 @@ impl CoachView {
                     view.snap = view.hub.snapshot();
                     view.coach_status = view.coach.status();
                     view.speaker_status = view.speaker.status();
-                    if let Some(agent) = &view.agent {
-                        while let Ok(e) = agent.events().try_recv() {
-                            view.chat.apply(e);
+                    while let Ok(e) = view.conversation.events().try_recv() {
+                        view.apply_conversation(e);
+                    }
+                    if let Some(rx) = &view.capture
+                        && let Ok(result) = rx.try_recv()
+                    {
+                        view.capture = None;
+                        if let CaptureResult::Bound(b) = result {
+                            view.settings.ptt = Some(b.clone());
+                            if let Some(i) = &view.input {
+                                i.set_ptt(Some(b));
+                            }
+                            if let Err(e) = view.settings.save() {
+                                view.chat
+                                    .system_message(format!("Réglages non enregistrés : {e}"));
+                            }
                         }
                     }
                     let tools: Vec<ToolCallLog> =
@@ -177,6 +218,15 @@ impl CoachView {
             chat: Chat::default(),
             input_focus: cx.focus_handle(),
             _keep_alive: keep_alive,
+            conversation,
+            input,
+            listener,
+            recorder,
+            mic_name,
+            settings,
+            capture: None,
+            recording: false,
+            voice_latency: None,
             reference: ReferenceStatus::None,
             plan: PlanStatus::None,
             comparisons: Comparisons::default(),
@@ -201,16 +251,41 @@ impl CoachView {
         if text.is_empty() {
             return;
         }
-        let Some(agent) = self.agent.clone() else {
+        if self.agent.is_none() {
             self.chat
                 .system_message("Aucun agent : lancer sans --no-agent.");
             return;
-        };
-        let analyzer = self.ready_reference().map(|r| r.analyzer.clone());
-        let ctx = pilot_context(&self.snap, analyzer.as_deref(), &self.coach_status);
-        let turn = agent.prompt(coach::format_prompt(&ctx, &text));
-        self.chat.pilot_message(&text, turn);
+        }
+        self.conversation.send_text(text);
         self.chat.input.clear();
+    }
+
+    fn apply_conversation(&mut self, e: ConvEvent) {
+        match e {
+            ConvEvent::Agent(e) => self.chat.apply(e),
+            ConvEvent::Pilot { turn, text, voice } => {
+                self.chat.pilot_message(&text, turn);
+                if voice {
+                    self.voice_latency = None;
+                }
+            }
+            ConvEvent::Recording(r) => self.recording = r,
+            ConvEvent::NotUnderstood => self.chat.system_message("Rien compris, répète."),
+            ConvEvent::Latency(l) => self.voice_latency = Some(l),
+        }
+    }
+
+    fn start_capture(&mut self) {
+        if let Some(i) = &self.input {
+            self.capture = Some(i.capture());
+        }
+    }
+
+    fn toggle_speak_replies(&mut self) {
+        self.settings.speak_replies = !self.settings.speak_replies;
+        self.conversation
+            .set_speak_replies(self.settings.speak_replies);
+        let _ = self.settings.save();
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -218,11 +293,7 @@ impl CoachView {
         let ctrl = ks.modifiers.control || ks.modifiers.platform;
         match ks.key.as_str() {
             "enter" => self.send_message(),
-            "escape" => {
-                if let Some(a) = &self.agent {
-                    a.cancel();
-                }
-            }
+            "escape" => self.conversation.cancel(),
             "backspace" => {
                 self.chat.input.pop();
             }
@@ -469,7 +540,7 @@ impl CoachView {
             .flex_wrap()
             .gap_2()
             .child(status_pill("Télémétrie", c, detail))
-            .child(status_pill("STT", theme::IDLE, "jalon 5"))
+            .child(self.render_stt_pill())
             .child(self.render_tts_pill())
             .child(self.render_agent_pill())
             .child(match (&self.mcp_url, &self.mcp_error) {
@@ -477,6 +548,147 @@ impl CoachView {
                 (None, Some(e)) => status_pill("Serveur MCP", theme::ERR, e.clone()),
                 (None, None) => status_pill("Serveur MCP", theme::IDLE, "arrêté"),
             })
+    }
+
+    fn render_stt_pill(&self) -> gpui::Div {
+        if self.recording {
+            let level = self
+                .recorder
+                .as_ref()
+                .map(|r| (r.level() * 100.0).min(100.0))
+                .unwrap_or(0.0);
+            return status_pill("STT", theme::ERR, format!("● enregistrement {level:.0} %"));
+        }
+        let Some(l) = &self.listener else {
+            return status_pill("STT", theme::IDLE, "désactivé");
+        };
+        let st = l.status();
+        let (c, detail) = match &st.state {
+            SpeakerState::Loading => (
+                theme::WARN,
+                st.detail.unwrap_or_else(|| "chargement".into()),
+            ),
+            SpeakerState::Ready => match (&self.settings.ptt, &self.recorder) {
+                (_, None) => (theme::WARN, "aucun micro".into()),
+                (None, _) => (theme::WARN, "bouton de push-to-talk à régler".into()),
+                (Some(b), Some(_)) => (theme::OK, b.label()),
+            },
+            SpeakerState::Error(e) => (theme::ERR, e.clone()),
+        };
+        status_pill("STT", c, detail)
+    }
+
+    fn render_voice_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let capturing = self.capture.is_some();
+        let ptt = if capturing {
+            "Appuie sur une touche ou un bouton… (Échap pour annuler)".to_string()
+        } else {
+            self.settings
+                .ptt
+                .as_ref()
+                .map(|b| b.label())
+                .unwrap_or_else(|| "aucun bouton".into())
+        };
+        let button = |id: &'static str, label: String| {
+            div()
+                .id(id)
+                .px_2()
+                .py_1()
+                .flex_none()
+                .rounded_md()
+                .bg(color(theme::BORDER))
+                .text_xs()
+                .cursor_pointer()
+                .child(label)
+        };
+        let latency = self.voice_latency.map(|l| {
+            let f = |ms: Option<f64>| {
+                ms.map(|v| format!("{:.2} s", v / 1000.0))
+                    .unwrap_or_else(|| "…".into())
+            };
+            format!(
+                "Fin de parole → texte {} → premier mot {} → premier son {}",
+                f(l.transcript_ms),
+                f(l.first_word_ms),
+                f(l.first_sound_ms)
+            )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pb_2()
+            .border_b_1()
+            .border_color(color(theme::BORDER))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .text_xs()
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(color(theme::MUTED))
+                            .child("Parler :"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_color(color(if capturing { theme::WARN } else { theme::TEXT }))
+                            .child(ptt),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        button(
+                            "ptt-bind",
+                            if capturing {
+                                "Annuler".into()
+                            } else {
+                                "Modifier…".into()
+                            },
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            if view.capture.is_some() {
+                                if let Some(i) = &view.input {
+                                    i.cancel_capture();
+                                }
+                            } else {
+                                view.start_capture();
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        button(
+                            "speak-replies",
+                            if self.settings.speak_replies {
+                                "Réponses dites : oui".into()
+                            } else {
+                                "Réponses dites : non".into()
+                            },
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.toggle_speak_replies();
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .children(self.mic_name.as_ref().map(|m| {
+                div()
+                    .text_xs()
+                    .text_color(color(theme::MUTED))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(format!("Micro : {m}"))
+            }))
+            .children(latency.map(|l| div().text_xs().text_color(color(theme::MUTED)).child(l)))
     }
 
     fn render_agent_pill(&self) -> gpui::Div {
@@ -568,6 +780,7 @@ impl CoachView {
             .min_h_0()
             .min_w_0()
             .overflow_hidden()
+            .child(self.render_voice_settings(cx))
             .child(
                 div()
                     .id("chat-log")

@@ -1,0 +1,27 @@
+[package]
+name = "input"
+description = "Périphériques d'entrée lus en arrière-plan : clavier, souris, volants, boîtiers, manettes ; capture de liaison et push-to-talk"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true
+device_query.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+gilrs.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
