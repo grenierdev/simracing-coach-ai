@@ -173,7 +173,7 @@ Parakeet écrit les nombres en chiffres, ce qui facilite le repérage des virage
 - Capture et lecture audio : `cpal` (WASAPI sous Windows).
 - Les modèles sont téléchargés au premier lancement depuis Hugging Face dans le répertoire de données de l'utilisateur, et non versionnés.
 - Les téléchargements utilisent le magasin de certificats du système (`ureq` avec `platform-verifier`) plutôt qu'une liste intégrée : ils passent derrière un proxy d'entreprise qui inspecte le TLS. Vérifié depuis la session cloud, qui passe par un tel proxy.
-- Windows : la bibliothèque statique est compilée avec le runtime C statique (`/MT`) ; `.cargo/config.toml` active `+crt-static` pour la cible MSVC. À confirmer par la CI Windows.
+- Windows : la bibliothèque statique est compilée avec le runtime C statique (`/MT`) ; `.cargo/config.toml` active `+crt-static` pour la cible MSVC. Vérifié : la CI Windows compile, lie et passe les tests avec la bibliothèque statique (run du 2026-11-15, commit 08e9af8).
 
 ## 10. Latence de la conversation
 
