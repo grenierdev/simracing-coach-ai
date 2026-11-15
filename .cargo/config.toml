@@ -1,0 +1,4 @@
+# La bibliothèque statique de sherpa-onnx pour Windows est compilée avec le
+# runtime C statique (/MT) : on aligne Rust dessus.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

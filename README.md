@@ -10,12 +10,12 @@ Pipeline vocal : STT → Claude (via ACP) → TTS. Le STT et le TTS tournent dan
 |---|---|
 | 1. Télémétrie live, enregistrement des tours, affichage GPUI | **fait** |
 | 2. Tour de référence, alignement, deltas par virage | **fait** |
-| 3. Déclencheurs, consignes statiques, TTS | à faire |
+| 3. Déclencheurs, consignes statiques, TTS | **fait** |
 | 4. Serveur MCP et client ACP, saisie texte | à faire |
 | 5. STT push-to-talk, conversation vocale | à faire |
 | 6. Planification automatique du tour suivant | à faire |
 
-![Jalon 2 : session synthétique comparée à une référence CSV Garage61](docs/jalon2.png)
+![Jalon 3 : consignes dites pendant le rejeu synthétique](docs/jalon3.png)
 
 Les conclusions des vérifications préalables (crates, versions, ACP, MCP, authentification, Garage61, STT/TTS, latence) sont dans [docs/verifications.md](docs/verifications.md).
 
@@ -28,13 +28,17 @@ crates/
   reference/   import du tour de référence : CSV Garage61, meilleur tour d'un .ibt,
                estimation de YawRate/LatAccel s'ils manquent
   analysis/    alignement sur LapDistPct, zones de virage, métriques et deltas
+  triggers/    moteur de consignes (position, condition, priorité, expiration,
+               silence au freinage), plan TOML, boucle rapide
+  voice/       traits Tts et Stt, moteurs sherpa-onnx (Piper, Kokoro, Parakeet),
+               sortie audio cpal, thread de parole, téléchargement des modèles
   ui/          interface GPUI
   app/         binaire `simcoach` : choix de la source, lancement de l'UI
 ```
 
-Les crates `coach`, `mcp`, `voice` et `triggers` seront ajoutées avec leurs jalons.
+Les crates `coach` et `mcp` seront ajoutées au jalon 4.
 
-Boucle rapide : un thread `telemetry` lit la source à 60 Hz, découpe les tours et publie un instantané. L'UI le lit à 30 Hz sans jamais bloquer la boucle. Les consommateurs temps réel (déclencheurs, jalon 3) s'abonnent aux échantillons par `TelemetryHub::subscribe_samples`, via une file bornée : un abonné lent perd des échantillons au lieu de ralentir la boucle.
+Boucle rapide : un thread `telemetry` lit la source à 60 Hz, découpe les tours et publie un instantané. L'UI le lit à 30 Hz sans jamais bloquer la boucle. Le thread `coach-fast` reçoit chaque échantillon via `TelemetryHub::subscribe_samples` (file bornée : un abonné lent perd des échantillons au lieu de ralentir la boucle), fait tourner le moteur de consignes et pilote le thread de parole.
 
 ## Utilisation
 
@@ -50,6 +54,51 @@ simcoach --write-synthetic-reference <dossier>            # référence synthét
 
 La référence se choisit aussi dans l'interface (bouton « Choisir… »).
 
+```sh
+simcoach ... --plan plans/synthetique.toml   # plan de consignes
+simcoach ... --no-voice                      # consignes affichées sans être dites
+```
+
+En mode `--synthetic`, la référence synthétique et `plans/synthetique.toml` sont chargés par défaut. Le plan se choisit aussi dans l'interface.
+
+## Consignes
+
+Un plan est un fichier TOML ; la syntaxe complète est dans `crates/triggers/src/plan.rs` et un exemple commenté dans `plans/synthetique.toml`.
+
+```toml
+[[consigne]]
+virage = "T4"            # virage de la carte de la piste (tirée de la référence)
+ancre = "freinage"       # freinage, entree, apex ou sortie
+decalage_m = -300        # 300 m avant l'ancre
+texte = "Épingle, patiente avant les gaz."
+priorite = 7             # 0 à 9
+repetition = "chaque_tour"           # une_fois, chaque_tour ou { tours = 3 }
+condition = { delta_au_dessus = 0.3 } # facultatif
+```
+
+Règles du moteur :
+
+- une consigne est armée quand la voiture franchit sa position et que sa condition est vraie, puis dite dès qu'un créneau se libère ;
+- **aucune parole en zone de freinage** : rien ne démarre pendant un freinage (pédale au-dessus de 5 %) ni dans une zone de silence (de 30 m avant le freinage de la référence jusqu'à l'apex, réglable), et une phrase en cours est coupée si le pilote freine ;
+- une phrase n'est lancée que si elle a le temps d'être dite avant la prochaine zone de silence, d'après sa durée réelle (phrases synthétisées à l'avance) et la vitesse ;
+- entre deux consignes en attente, la plus prioritaire passe d'abord ; au-delà de son retard maximal (150 m par défaut), une consigne est abandonnée.
+
+## Voix
+
+Les moteurs sont derrière les traits `voice::Tts` et `voice::Stt` : on peut changer de moteur sans toucher au reste. Implémentations actuelles : `SherpaTts::piper` (voix par défaut `fr_FR-siwis`), `SherpaTts::kokoro`, `SherpaStt::parakeet`, et `SilentTts` (muet).
+
+Au premier lancement, la voix (environ 80 Mo) est téléchargée depuis Hugging Face dans le dossier de données de l'utilisateur (`%LOCALAPPDATA%\simcoach\data\models`), ou dans `SIMCOACH_MODELS_DIR`. Pour télécharger à l'avance, avec le modèle de reconnaissance vocale (environ 670 Mo) :
+
+```sh
+cargo run -p voice --no-default-features --example download_models -- --stt
+```
+
+La bibliothèque sherpa-onnx est téléchargée par `cargo build` depuis les releases GitHub (feature `sherpa-static`, par défaut). Sans accès à GitHub, on peut prendre la même bibliothèque sur npm (`sherpa-onnx-win-x64` ou `sherpa-onnx-linux-x64`, version 1.13.8) :
+
+```sh
+SHERPA_ONNX_LIB_DIR=<dossier de la bibliothèque> cargo build --no-default-features --features app/sherpa-shared,voice/sherpa-shared
+```
+
 Le mode rejeu et la session synthétique permettent de développer sans lancer iRacing, y compris sous Linux.
 
 ## Compilation
@@ -61,7 +110,7 @@ Rust 1.88 ou plus récent.
 
   ```sh
   sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
-    libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1
+    libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1 libasound2-dev
   ```
 
 ```sh

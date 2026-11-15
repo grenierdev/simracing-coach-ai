@@ -1,0 +1,50 @@
+# Plan de démonstration pour le circuit synthétique (simcoach --synthetic).
+#
+# Positions : par virage (ancre + décalage en mètres) ou absolues (LapDistPct).
+# Le coach se tait de 30 m avant chaque freinage de la référence jusqu'à l'apex,
+# et ne lance jamais une phrase qui n'aurait pas le temps d'être dite avant.
+# À 250 km/h, une phrase de 2,5 s couvre environ 175 m : on place les consignes
+# 250 à 300 m avant le freinage.
+
+[reglages]
+marge_silence_m = 30
+silence_jusqu_a = "apex"
+retard_max_m = 150
+
+[[consigne]]
+id = "tour"
+position = 0.005
+texte = "Nouveau tour, on attaque."
+repetition = "une_fois"
+priorite = 3
+
+[[consigne]]
+id = "t1"
+virage = "T1"
+decalage_m = -300
+texte = "Virage un, freine progressivement."
+priorite = 6
+
+[[consigne]]
+id = "t4"
+virage = "T4"
+decalage_m = -300
+texte = "Épingle, patiente avant les gaz."
+priorite = 7
+
+[[consigne]]
+id = "t5-delta"
+virage = "T5"
+ancre = "entree"
+decalage_m = -150
+texte = "Tu es en retard, garde de la vitesse dans la courbe rapide."
+condition = { delta_au_dessus = 0.3 }
+priorite = 5
+
+[[consigne]]
+id = "t6"
+virage = "T6"
+decalage_m = -300
+texte = "Dernier virage, sortie large."
+repetition = { tours = 3 }
+priorite = 6

@@ -6,10 +6,14 @@
 //!          [--speed 2.0] [--loop]
 //! simcoach --synthetic             rejoue une session synthétique générée en mémoire
 //! simcoach ... --reference ref.csv  tour de référence (CSV Garage61 ou .ibt)
+//! simcoach ... --plan plan.toml     plan de consignes
+//! simcoach ... --no-voice           consignes affichées sans être dites
 //! simcoach --write-synthetic f.ibt écrit la session synthétique dans un fichier
 //! simcoach --write-synthetic-reference <dossier>
 //!                                  écrit un tour de référence synthétique (CSV Garage61)
 //! ```
+
+mod speech;
 
 use std::path::PathBuf;
 
@@ -23,6 +27,8 @@ use telemetry::{
 struct Args {
     replay: Option<PathBuf>,
     reference: Option<PathBuf>,
+    plan: Option<PathBuf>,
+    no_voice: bool,
     synthetic: bool,
     write_synthetic: Option<PathBuf>,
     write_synthetic_reference: Option<PathBuf>,
@@ -40,6 +46,8 @@ fn parse_args() -> anyhow::Result<Args> {
         match a.as_str() {
             "--replay" => args.replay = Some(it.next().context("--replay <fichier.ibt>")?.into()),
             "--synthetic" => args.synthetic = true,
+            "--plan" => args.plan = Some(it.next().context("--plan <fichier.toml>")?.into()),
+            "--no-voice" => args.no_voice = true,
             "--reference" => {
                 args.reference = Some(
                     it.next()
@@ -68,7 +76,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--loop" => args.looping = true,
             "-h" | "--help" => {
                 println!(
-                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--reference fichier.csv|.ibt] [--write-synthetic fichier.ibt] [--write-synthetic-reference dossier]"
+                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--reference fichier.csv|.ibt] [--plan plan.toml] [--no-voice] [--write-synthetic fichier.ibt] [--write-synthetic-reference dossier]"
                 );
                 std::process::exit(0);
             }
@@ -87,33 +95,9 @@ fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
 
     if let Some(dir) = &args.write_synthetic_reference {
-        // Tour « pro » au rythme limite, au format CSV Garage61, sans YawRate ni
-        // LatAccel (estimés à l'import depuis la trajectoire).
-        let samples = SyntheticTrack::demo().simulate_lap(1.0, 0.0, 0.0);
-        let t = samples.len() as f64 / 60.0;
-        let name = format!(
-            "Garage 61 - Pilote Pro - Voiture synthétique - Circuit synthétique - {:02}.{:02}.{:03} - demo.csv",
-            (t / 60.0) as u32,
-            (t % 60.0) as u32,
-            ((t.fract()) * 1000.0).round() as u32
-        );
-        let columns = [
-            "Speed",
-            "LapDistPct",
-            "Lat",
-            "Lon",
-            "Brake",
-            "Throttle",
-            "RPM",
-            "SteeringWheelAngle",
-            "Gear",
-            "Clutch",
-            "LongAccel",
-            "PositionType",
-        ];
+        let (name, csv) = synthetic_reference_csv();
         let path = dir.join(name);
-        std::fs::write(&path, reference::write_garage61_csv(&samples, &columns))
-            .with_context(|| format!("écriture de {}", path.display()))?;
+        std::fs::write(&path, csv).with_context(|| format!("écriture de {}", path.display()))?;
         println!("Référence synthétique écrite dans {}", path.display());
         return Ok(());
     }
@@ -147,8 +131,67 @@ fn main() -> anyhow::Result<()> {
         Box::new(LiveSource::new())
     };
 
-    ui::run("Coach simracing", args.reference.clone(), move || {
-        TelemetryHub::spawn(source, TelemetryHubConfig::default())
+    // Référence et plan : ceux de la ligne de commande ; en mode synthétique,
+    // la référence et le plan de démonstration par défaut.
+    let reference = match (&args.reference, args.synthetic) {
+        (Some(p), _) => Some(ui::ReferenceSource::File(p.clone())),
+        (None, true) => {
+            let (name, csv) = synthetic_reference_csv();
+            let r = reference::from_garage61_csv(csv.as_bytes(), &name)?;
+            Some(ui::ReferenceSource::Preloaded(Box::new(r)))
+        }
+        (None, false) => None,
+    };
+    let plan = args.plan.clone().or_else(|| {
+        let demo = PathBuf::from("plans/synthetique.toml");
+        (args.synthetic && demo.exists()).then_some(demo)
     });
+    let no_voice = args.no_voice;
+
+    ui::run(
+        "Coach simracing",
+        ui::StartOptions { reference, plan },
+        move || {
+            let hub = TelemetryHub::spawn(source, TelemetryHubConfig::default());
+            let speaker = speech::start_speaker(no_voice);
+            let coach = triggers::TriggerRuntime::spawn(
+                hub.subscribe_samples(),
+                Box::new(speech::SpeakerOutput(speaker.clone())),
+            );
+            ui::Services {
+                hub,
+                coach,
+                speaker,
+            }
+        },
+    );
     Ok(())
+}
+
+/// Tour « pro » synthétique au rythme limite, au format CSV Garage61, sans
+/// YawRate ni LatAccel (estimés à l'import depuis la trajectoire).
+fn synthetic_reference_csv() -> (String, String) {
+    let samples = SyntheticTrack::demo().simulate_lap(1.0, 0.0, 0.0);
+    let t = samples.len() as f64 / 60.0;
+    let name = format!(
+        "Garage 61 - Pilote Pro - Voiture synthétique - Circuit synthétique - {:02}.{:02}.{:03} - demo.csv",
+        (t / 60.0) as u32,
+        (t % 60.0) as u32,
+        (t.fract() * 1000.0).round() as u32
+    );
+    let columns = [
+        "Speed",
+        "LapDistPct",
+        "Lat",
+        "Lon",
+        "Brake",
+        "Throttle",
+        "RPM",
+        "SteeringWheelAngle",
+        "Gear",
+        "Clutch",
+        "LongAccel",
+        "PositionType",
+    ];
+    (name, reference::write_garage61_csv(&samples, &columns))
 }

@@ -1,0 +1,26 @@
+[package]
+name = "voice"
+description = "Voix du coach : traits Tts/Stt interchangeables, sherpa-onnx, sortie audio"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["sherpa-static"]
+# Moteurs sherpa-onnx (Piper, Kokoro, Parakeet). `static` télécharge la
+# bibliothèque précompilée depuis les releases GitHub ; `shared` utilise une
+# bibliothèque partagée locale désignée par SHERPA_ONNX_LIB_DIR.
+sherpa = ["dep:sherpa-onnx"]
+sherpa-static = ["sherpa", "sherpa-onnx/static"]
+sherpa-shared = ["sherpa", "sherpa-onnx/shared"]
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+cpal.workspace = true
+ureq.workspace = true
+serde.workspace = true
+directories.workspace = true
+sherpa-onnx = { workspace = true, optional = true }

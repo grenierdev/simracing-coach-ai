@@ -8,7 +8,21 @@ use telemetry::{Lap, LiveSnapshot};
 
 pub struct ReferenceState {
     pub reference: ReferenceLap,
-    pub analyzer: Analyzer,
+    pub analyzer: Arc<Analyzer>,
+}
+
+impl ReferenceState {
+    pub fn new(reference: ReferenceLap, session_length_m: Option<f64>) -> Self {
+        let analyzer = Analyzer::new(
+            &reference.lap,
+            reference.track_length_m.or(session_length_m),
+            &telemetry::CornerDetectionParams::default(),
+        );
+        ReferenceState {
+            reference,
+            analyzer: Arc::new(analyzer),
+        }
+    }
 }
 
 impl ReferenceState {
@@ -115,7 +129,7 @@ mod tests {
 
         let state = ReferenceState {
             reference,
-            analyzer,
+            analyzer: Arc::new(analyzer),
         };
         assert!(state.length_mismatch(Some(track.length_m())).is_none());
         assert!(state.length_mismatch(Some(7000.0)).is_some());

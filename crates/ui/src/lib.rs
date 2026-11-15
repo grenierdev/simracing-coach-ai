@@ -8,15 +8,19 @@ pub mod format;
 pub mod state;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use analysis::{Analyzer, CornerComparison};
+use analysis::CornerComparison;
 use gpui::{
     App, Bounds, Context, FontWeight, Hsla, IntoElement, PathPromptOptions, Render, SharedString,
     Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, relative, rgb,
     size,
 };
-use telemetry::{ConnectionState, CornerDetectionParams, LiveSnapshot, TelemetryHub};
+use reference::ReferenceLap;
+use telemetry::{ConnectionState, LiveSnapshot, TelemetryHub};
+use triggers::{Plan, RuntimeStatus, TriggerRuntime, TriggerState};
+use voice::{Speaker, SpeakerState, SpeakerStatus};
 
 use crate::state::{Comparisons, ReferenceState};
 
@@ -37,17 +41,30 @@ mod theme {
     pub const BEST: u32 = 0xbc8cff;
 }
 
-/// Lance l'application. `make_hub` est appelé une fois la fenêtre prête ;
-/// `reference` : fichier de référence à charger au démarrage.
-pub fn run(
-    title: &str,
-    reference: Option<PathBuf>,
-    make_hub: impl FnOnce() -> TelemetryHub + 'static,
-) {
+/// Services démarrés par l'application et pilotés par l'interface.
+pub struct Services {
+    pub hub: TelemetryHub,
+    pub coach: TriggerRuntime,
+    pub speaker: Arc<Speaker>,
+}
+
+pub enum ReferenceSource {
+    File(PathBuf),
+    Preloaded(Box<ReferenceLap>),
+}
+
+#[derive(Default)]
+pub struct StartOptions {
+    pub reference: Option<ReferenceSource>,
+    pub plan: Option<PathBuf>,
+}
+
+/// Lance l'application. `make_services` est appelé une fois l'interface prête.
+pub fn run(title: &str, options: StartOptions, make_services: impl FnOnce() -> Services + 'static) {
     let title: SharedString = title.to_string().into();
     gpui_platform::application().run(move |cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
-        let hub = make_hub();
+        let bounds = Bounds::centered(None, size(px(1280.), px(860.)), cx);
+        let services = make_services();
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -57,7 +74,7 @@ pub fn run(
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|cx| CoachView::new(hub, reference, cx)),
+            |_, cx| cx.new(|cx| CoachView::new(services, options, cx)),
         )
         .expect("ouverture de la fenêtre");
         cx.activate(true);
@@ -71,21 +88,39 @@ enum ReferenceStatus {
     Failed(String),
 }
 
+enum PlanStatus {
+    None,
+    Loaded(String),
+    Failed(String),
+}
+
 pub struct CoachView {
     hub: TelemetryHub,
+    coach: TriggerRuntime,
+    speaker: Arc<Speaker>,
     snap: LiveSnapshot,
+    coach_status: RuntimeStatus,
+    speaker_status: SpeakerStatus,
     reference: ReferenceStatus,
+    plan: PlanStatus,
     comparisons: Comparisons,
     _refresh: Task<()>,
 }
 
 impl CoachView {
-    fn new(hub: TelemetryHub, reference: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    fn new(services: Services, options: StartOptions, cx: &mut Context<Self>) -> Self {
+        let Services {
+            hub,
+            coach,
+            speaker,
+        } = services;
         let refresh = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(REFRESH).await;
                 let alive = this.update(cx, |view, cx| {
                     view.snap = view.hub.snapshot();
+                    view.coach_status = view.coach.status();
+                    view.speaker_status = view.speaker.status();
                     if let ReferenceStatus::Ready(r) = &view.reference {
                         view.comparisons.update(&view.snap, &r.analyzer);
                     }
@@ -98,15 +133,67 @@ impl CoachView {
         });
         let mut view = CoachView {
             snap: hub.snapshot(),
+            coach_status: coach.status(),
+            speaker_status: speaker.status(),
             hub,
+            coach,
+            speaker,
             reference: ReferenceStatus::None,
+            plan: PlanStatus::None,
             comparisons: Comparisons::default(),
             _refresh: refresh,
         };
-        if let Some(path) = reference {
-            view.load_reference(path, cx);
+        match options.reference {
+            Some(ReferenceSource::File(path)) => view.load_reference(path, cx),
+            Some(ReferenceSource::Preloaded(r)) => {
+                let state = ReferenceState::new(*r, None);
+                view.set_reference(state);
+            }
+            None => {}
+        }
+        if let Some(path) = options.plan {
+            view.load_plan(path, cx);
         }
         view
+    }
+
+    fn set_reference(&mut self, state: ReferenceState) {
+        self.comparisons.clear();
+        self.comparisons.update(&self.snap, &state.analyzer);
+        self.coach.set_reference(Some(state.analyzer.clone()));
+        self.reference = ReferenceStatus::Ready(Box::new(state));
+    }
+
+    fn pick_plan(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Plan de consignes (.toml)".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |view, cx| view.load_plan(path, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn load_plan(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.plan = match Plan::load(&path) {
+            Ok(plan) => {
+                self.coach.set_plan(name.clone(), plan);
+                PlanStatus::Loaded(name)
+            }
+            Err(e) => PlanStatus::Failed(format!("{name} : {e}")),
+        };
+        cx.notify();
     }
 
     fn pick_reference(&mut self, cx: &mut Context<Self>) {
@@ -142,28 +229,15 @@ impl CoachView {
         self.comparisons.clear();
         let session_length = self.snap.session.as_ref().and_then(|s| s.track_length_m);
         let task = cx.background_executor().spawn(async move {
-            reference::load(&path).map(|r| {
-                let analyzer = Analyzer::new(
-                    &r.lap,
-                    r.track_length_m.or(session_length),
-                    &CornerDetectionParams::default(),
-                );
-                ReferenceState {
-                    reference: r,
-                    analyzer,
-                }
-            })
+            reference::load(&path).map(|r| ReferenceState::new(r, session_length))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |view, cx| {
-                view.reference = match result {
-                    Ok(state) => {
-                        view.comparisons.update(&view.snap, &state.analyzer);
-                        ReferenceStatus::Ready(Box::new(state))
-                    }
-                    Err(e) => ReferenceStatus::Failed(e.to_string()),
-                };
+                match result {
+                    Ok(state) => view.set_reference(state),
+                    Err(e) => view.reference = ReferenceStatus::Failed(e.to_string()),
+                }
                 cx.notify();
             });
         })
@@ -312,9 +386,28 @@ impl CoachView {
             .gap_2()
             .child(status_pill("Télémétrie", c, detail))
             .child(status_pill("STT", theme::IDLE, "jalon 5"))
-            .child(status_pill("TTS", theme::IDLE, "jalon 3"))
+            .child(self.render_tts_pill())
             .child(status_pill("Agent ACP", theme::IDLE, "jalon 4"))
             .child(status_pill("Serveur MCP", theme::IDLE, "jalon 4"))
+    }
+
+    fn render_tts_pill(&self) -> gpui::Div {
+        let st = &self.speaker_status;
+        let (c, detail): (u32, String) = match &st.state {
+            SpeakerState::Loading => (
+                theme::WARN,
+                st.detail.clone().unwrap_or_else(|| "chargement".into()),
+            ),
+            SpeakerState::Ready => {
+                let mut d = st.engine.clone();
+                if let Some(ms) = st.last_latency_ms {
+                    d.push_str(&format!(" · {ms:.0} ms"));
+                }
+                (theme::OK, d)
+            }
+            SpeakerState::Error(e) => (theme::ERR, e.clone()),
+        };
+        status_pill("TTS", c, detail)
     }
 
     fn render_session(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -344,6 +437,150 @@ impl CoachView {
                     .child(format!("Source : {}", s.source)),
             )
             .child(self.render_reference(cx))
+            .child(self.render_plan_line(cx))
+    }
+
+    fn render_plan_line(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let (line, tone) = match (&self.plan, &self.coach_status.plan_error) {
+            (PlanStatus::None, _) => ("Aucun plan de consignes".to_string(), theme::MUTED),
+            (PlanStatus::Failed(e), _) => (e.clone(), theme::ERR),
+            (PlanStatus::Loaded(_), Some(e)) => (e.clone(), theme::ERR),
+            (PlanStatus::Loaded(n), None) => (
+                format!(
+                    "{n} · {} consignes · {} zones de silence",
+                    self.coach_status.triggers.len(),
+                    self.coach_status.quiet_zones
+                ),
+                theme::TEXT,
+            ),
+        };
+        let button = div()
+            .id("pick-plan")
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(color(theme::BORDER))
+            .text_xs()
+            .cursor_pointer()
+            .child("Choisir…")
+            .on_click(cx.listener(|view, _, _, cx| view.pick_plan(cx)));
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pt_2()
+            .border_t_1()
+            .border_color(color(theme::BORDER))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(color(theme::MUTED))
+                            .child("PLAN"),
+                    )
+                    .child(button),
+            )
+            .child(div().text_sm().text_color(color(tone)).child(line))
+    }
+
+    fn render_coach(&self) -> impl IntoElement {
+        let st = &self.coach_status;
+        let rows = st.triggers.iter().map(|v| {
+            let (state, tone) = match v.state {
+                TriggerState::Waiting => ("en attente".to_string(), theme::MUTED),
+                TriggerState::Queued => ("en file".to_string(), theme::WARN),
+                TriggerState::Spoken => (
+                    format!(
+                        "dite ×{} (tour {})",
+                        v.times_spoken,
+                        v.last_spoken_lap.unwrap_or(0)
+                    ),
+                    theme::OK,
+                ),
+                TriggerState::Expired => (format!("terminée ×{}", v.times_spoken), theme::IDLE),
+            };
+            let place = v
+                .trigger
+                .corner
+                .clone()
+                .unwrap_or_else(|| format!("{:.1} %", v.trigger.at_pct * 100.0));
+            div()
+                .flex()
+                .gap_2()
+                .py(px(2.))
+                .text_sm()
+                .child(div().w(px(56.)).whitespace_nowrap().child(place))
+                .child(
+                    div()
+                        .w(px(140.))
+                        .whitespace_nowrap()
+                        .text_color(color(tone))
+                        .child(state),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(v.trigger.text.clone()),
+                )
+        });
+        let log = st.log.iter().rev().take(3).map(|e| {
+            div()
+                .flex()
+                .gap_2()
+                .text_sm()
+                .child(
+                    div()
+                        .w(px(96.))
+                        .whitespace_nowrap()
+                        .text_color(color(theme::MUTED))
+                        .child(format!("Tour {} · {:.0} %", e.lap, e.pct * 100.0)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(format!("Coach : {}", e.text)),
+                )
+        });
+        let quiet = st.quiet_now.then(|| {
+            div()
+                .text_xs()
+                .text_color(color(theme::WARN))
+                .child("silence : zone de freinage")
+        });
+        panel("Consignes")
+            .flex_1()
+            .min_w_0()
+            .children(quiet)
+            .child(
+                div()
+                    .id("triggers")
+                    .h(px(80.))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
+            .child(
+                div()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(color(theme::BORDER))
+                    .text_xs()
+                    .text_color(color(theme::MUTED))
+                    .child("JOURNAL"),
+            )
+            .children(log)
     }
 
     fn render_reference(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -515,14 +752,21 @@ impl CoachView {
                 },
             )
         });
-        panel("Tours").flex_1().child(header).child(
-            div()
-                .id("laps")
-                .flex()
-                .flex_col()
-                .overflow_y_scroll()
-                .children(rows),
-        )
+        panel("Tours")
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(header)
+            .child(
+                div()
+                    .id("laps")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
     }
 
     fn render_corners(&self) -> gpui::AnyElement {
@@ -539,14 +783,15 @@ impl CoachView {
         let header = row(
             vec![
                 (50., "Virage".into()),
-                (72., "Δ dernier".into()),
-                (78., "Δ meilleur".into()),
-                (96., "V mini / réf".into()),
-                (60., "Frein".into()),
-                (60., "Gaz".into()),
-                (60., "Trail".into()),
-                (96., "Rotation E/S".into()),
-                (76., "Roue libre".into()),
+                (68., "Δ dernier".into()),
+                (72., "Δ meilleur".into()),
+                (90., "V mini / réf".into()),
+                (56., "Frein".into()),
+                (56., "Gaz".into()),
+                (56., "Trail".into()),
+                (88., "Rotation E/S".into()),
+                (72., "Roue libre".into()),
+                (120., "Consigne".into()),
             ],
             theme::MUTED,
         );
@@ -572,6 +817,17 @@ impl CoachView {
                 None => format!("– / {}", format::kmh(reference.min_speed as f32)),
             };
             let label_color = if here { theme::WARN } else { theme::TEXT };
+            let label = zone.corner.label();
+            let consigne = self
+                .coach_status
+                .triggers
+                .iter()
+                .find(|v| {
+                    v.trigger.corner.as_deref() == Some(label.as_str())
+                        && v.state != TriggerState::Expired
+                })
+                .map(|v| v.trigger.text.clone())
+                .unwrap_or_default();
             let cell =
                 |w: f32, text: String, c: u32| div().w(px(w)).text_color(color(c)).child(text);
             div()
@@ -580,27 +836,27 @@ impl CoachView {
                 .py(px(2.))
                 .text_sm()
                 .child(cell(50., zone.corner.label(), label_color))
-                .child(cell(72., dl, dl_color))
-                .child(cell(78., db, db_color))
-                .child(cell(96., vmin, theme::TEXT))
+                .child(cell(68., dl, dl_color))
+                .child(cell(72., db, db_color))
+                .child(cell(90., vmin, theme::TEXT))
                 .child(cell(
-                    60.,
+                    56.,
                     format::meters(lc.and_then(|c| c.brake_point_delta_m)),
                     theme::TEXT,
                 ))
                 .child(cell(
-                    60.,
+                    56.,
                     format::meters(lc.and_then(|c| c.throttle_on_delta_m)),
                     theme::TEXT,
                 ))
                 .child(cell(
-                    60.,
+                    56.,
                     lc.map(|c| format!("{:.0} m", c.lap.trail_brake_m))
                         .unwrap_or_else(|| "–".into()),
                     theme::TEXT,
                 ))
                 .child(cell(
-                    96.,
+                    88.,
                     match lc {
                         Some(c) => format!(
                             "{} / {}",
@@ -612,11 +868,20 @@ impl CoachView {
                     theme::TEXT,
                 ))
                 .child(cell(
-                    76.,
+                    72.,
                     lc.map(|c| format!("{:.2} s", c.lap.coasting_s))
                         .unwrap_or_else(|| "–".into()),
                     theme::TEXT,
                 ))
+                .child(
+                    div()
+                        .w(px(120.))
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_color(color(theme::MUTED))
+                        .child(consigne),
+                )
         });
         let summary = match (last, best) {
             (Some(l), _) => {
@@ -641,11 +906,15 @@ impl CoachView {
         };
         panel("Virages vs référence")
             .flex_1()
+            .min_h_0()
+            .overflow_hidden()
             .child(div().text_sm().text_color(color(theme::MUTED)).child(summary))
             .child(header)
             .child(
                 div()
                     .id("corner-deltas")
+                    .flex_1()
+                    .min_h_0()
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
@@ -704,6 +973,8 @@ impl CoachView {
             .child(
                 div()
                     .id("corners")
+                    .flex_1()
+                    .min_h_0()
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
@@ -726,18 +997,33 @@ impl Render for CoachView {
             .child(
                 div()
                     .flex()
-                    .gap_3()
-                    .child(div().w(px(360.)).child(self.render_session(cx)))
-                    .child(div().flex_1().child(self.render_live())),
-            )
-            .child(
-                div()
-                    .flex()
                     .flex_1()
                     .gap_3()
                     .min_h_0()
-                    .child(div().w(px(400.)).flex().child(self.render_laps()))
-                    .child(div().flex_1().flex().child(self.render_corners())),
+                    // Colonne de gauche : session, référence, plan, tours.
+                    .child(
+                        div()
+                            .w(px(380.))
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .min_h_0()
+                            .child(self.render_session(cx))
+                            .child(div().flex_1().flex().min_h_0().child(self.render_laps())),
+                    )
+                    // Colonne de droite : live, virages, consignes.
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .min_h_0()
+                            .min_w_0()
+                            .child(self.render_live())
+                            .child(div().flex_1().flex().min_h_0().child(self.render_corners()))
+                            .child(div().h(px(262.)).flex().child(self.render_coach())),
+                    ),
             )
     }
 }
