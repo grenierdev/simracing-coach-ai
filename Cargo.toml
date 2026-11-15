@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/telemetry", "crates/ui", "crates/app"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-channel = "0.5"
+memmap2 = "0.9"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
+telemetry = { path = "crates/telemetry" }
+ui = { path = "crates/ui" }
+# GPUI : la crate `gpui` de crates.io est figée en 0.2.2 (oct. 2025). `gpui-pre` est
+# un instantané hebdomadaire de Zed (lib `gpui`), utilisé aussi par gpui-component.
+# Versions épinglées exactement : l'API change d'une semaine à l'autre.
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12" }

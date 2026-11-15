@@ -1,0 +1,16 @@
+[package]
+name = "telemetry"
+description = "Lecture de la télémétrie iRacing (mémoire partagée et .ibt), découpage en tours, détection des virages"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+memmap2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true

@@ -1,0 +1,4 @@
+/target
+*.ibt
+*.csv
+.env

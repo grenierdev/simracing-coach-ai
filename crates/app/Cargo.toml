@@ -1,0 +1,18 @@
+[package]
+name = "app"
+description = "Coach vocal de simracing pour iRacing"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "simcoach"
+path = "src/main.rs"
+
+[dependencies]
+telemetry.workspace = true
+ui.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
