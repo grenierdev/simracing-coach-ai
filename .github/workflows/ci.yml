@@ -22,8 +22,13 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Rafraîchir sherpa-onnx (bibliothèque téléchargée absente du cache)
-        run: cargo clean -p sherpa-onnx-sys
+      # sherpa-onnx-sys réutilise l'archive de target/sherpa-onnx-prebuilt ; une
+      # copie partielle restaurée par le cache s'extrait sans la bibliothèque.
+      - name: Rafraîchir sherpa-onnx (archive précompilée)
+        shell: bash
+        run: |
+          rm -rf target/sherpa-onnx-prebuilt
+          cargo clean -p sherpa-onnx-sys
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -36,7 +41,12 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Rafraîchir sherpa-onnx (bibliothèque téléchargée absente du cache)
-        run: cargo clean -p sherpa-onnx-sys
+      # sherpa-onnx-sys réutilise l'archive de target/sherpa-onnx-prebuilt ; une
+      # copie partielle restaurée par le cache s'extrait sans la bibliothèque.
+      - name: Rafraîchir sherpa-onnx (archive précompilée)
+        shell: bash
+        run: |
+          rm -rf target/sherpa-onnx-prebuilt
+          cargo clean -p sherpa-onnx-sys
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
