@@ -15,7 +15,7 @@ Relevé du 2026-11-15. [V] : vérifié dans le code source ou la documentation. 
 | Authentification | Abonnement du CLI (login claude.ai), décidé le 2026-11-15 |
 | Prompt système | Prompt du coach injecté en `override` à la place de celui de Claude Code, décidé le 2026-11-15 |
 | Référence | Import manuel du CSV Garage61 ; l'API ne donne pas accès aux tours hors équipe |
-| STT/TTS | moshi-server : essai de compilation native sous Windows, repli sur WSL2 ; client WebSocket et MessagePack identique dans les deux cas |
+| STT/TTS | **sherpa-onnx** embarqué dans le processus (décidé le 2026-11-15) : Parakeet pour le STT, Piper ou Kokoro pour le TTS ; Kyutai abandonné |
 | Latence 1,5 s | **À risque**, voir la dernière section |
 
 ## 1. Crates pour le SDK iRacing et les .ibt
@@ -118,31 +118,31 @@ Prompt système et CLAUDE.md [V] :
 - [S] Les data packs publiés par des équipes ont un endpoint dédié (`/teams/{team}/datapacks/...`). Qu'un simple abonné puisse les télécharger par l'API n'est pas vérifié.
 - Décision : **import manuel du CSV** au jalon 2. L'import par l'API pour ses propres tours et ceux de son équipe viendra en option, avec le jeton dans `GARAGE61_TOKEN`.
 
-## 9. moshi-server (Kyutai)
+## 9. STT et TTS : sherpa-onnx (décision du 2026-11-15)
 
-- [V] `moshi-server` 0.6.4. Authentification par l'en-tête `kyutai-api-key` (valeur listée dans `authorized_ids`). Tous les messages sont du MessagePack étiqueté par `type`.
-- [V] STT, `/api/asr-streaming` :
-  - envoi : `{"type":"Audio","pcm":[f32]}`, mono 24 kHz, blocs de 1920 échantillons (80 ms), et `{"type":"Marker","id":n}` ;
-  - réception : `Word{text,start_time}`, `EndWord{stop_time}`, `Step{prs}` (VAD), `Marker`, `Ready`, `Error`.
-  - Modèle `kyutai/stt-1b-en_fr` : anglais et français, délai de 0,5 s.
-- [V] TTS, `/api/tts_streaming?voice=...&format=PcmMessagePack` :
-  - envoi : `{"type":"Text","text":...}` mot par mot, puis `{"type":"Eos"}` ;
-  - réception : `Audio{pcm}` à 24 kHz, `Text{text,start_s,stop_s}`.
-  - Modèle `kyutai/tts-1.6b-en_fr`. La config fournie utilise le module Python embarqué ; les réglages CFG sont dans la config, pas dans l'URL.
-- [S] Voix françaises : `cml-tts/fr/` (CC-BY 4.0) dans `kyutai/tts-voices`. Les voix `expresso/` sont non commerciales. Je n'ai pas pu lister le dépôt (huggingface.co bloqué).
-- [V] Windows : le README de moshi dit « While we hope that the present codebase will work on Windows, we do not provide official support for it ». Aucun rapport de compilation native trouvé.
-- [V] Le code Rust de `moshi-server` 0.6.4 n'a aucune partie propre à Unix (pas de `cfg(unix)`, `libc` ni `nix`). Les obstacles sous Windows viennent de la chaîne de compilation :
-  - CUDA : `nvcc` et MSVC, pour candle avec la feature `cuda` ;
-  - libopus : la crate `opus` la compile en C ;
-  - Python : pyo3 lie libpython, même pour le STT seul.
-- [S] Le module TTS est en Python embarqué. Ses dépendances (`pyproject.toml`) et le script de démarrage (`start_tts.sh`, en bash) sont pensés pour Linux.
-- Plan :
-  1. Tenter la compilation native sur le PC de simracing, au jalon 3.
-  2. En cas d'échec, WSL2 avec CUDA. WSL2 accède au GPU NVIDIA avec les pilotes récents, et le port du serveur est joignable depuis Windows par `localhost`.
-  3. Une machine Linux séparée reste possible.
+Kyutai (moshi-server) est écarté : pas de prise en charge officielle de Windows, un module TTS en Python embarqué, CUDA obligatoire et un serveur séparé. Les notes sur son protocole sont dans l'historique git de ce fichier.
 
-  Le client est le même dans les trois cas : WebSocket et MessagePack.
-- [S] Partage du GPU avec iRacing : le STT (environ 1 milliard de paramètres) et le TTS (environ 1,6 milliard) tourneront sur la même carte que le jeu. Il faudra mesurer la VRAM et l'effet sur les images par seconde. Réduire `batch_size` (64 dans la config d'exemple) à 1 ou 2 diminue la mémoire réservée.
+Retenu : **sherpa-onnx**, embarqué dans le processus, sans serveur, sans Python et sans WSL.
+
+- [V] Crate officielle `sherpa-onnx` 2.0.1 (2026-10-27), dépôt k2-fsa/sherpa-onnx, environ 620 000 téléchargements récents.
+- [V] Le build script de `sherpa-onnx-sys` télécharge une bibliothèque précompilée (`sherpa-onnx-v<version>-win-x64-static-MT-Release-lib.tar.bz2`) depuis les releases GitHub, liée en statique.
+  - Il existe aussi une feature `shared`.
+  - `SHERPA_ONNX_LIB_DIR` ou `SHERPA_ONNX_ARCHIVE_DIR` permettent de fournir une bibliothèque locale, par exemple une version CUDA ou une compilation hors ligne.
+  - Les bibliothèques précompilées tournent sur CPU.
+- [V] API Rust :
+  - `OfflineRecognizer` (transducteur NeMo, Canary, Whisper, entre autres), pour transcrire un enregistrement complet ;
+  - `OnlineRecognizer`, pour la reconnaissance en continu ;
+  - `Vad` ;
+  - `OfflineTts` (VITS/Piper, Kokoro, Matcha, Supertonic, Pocket, Kitten, ZipVoice), dont la génération accepte un callback qui reçoit le son au fur et à mesure.
+- [S] Modèles français, non vérifiés (pages de modèles inaccessibles depuis la session) :
+  - STT : Parakeet TDT 0.6B v3 int8 (25 langues européennes dont le français), avec Canary 180M flash en alternative ;
+  - TTS : voix Piper `fr_FR` (siwis, tom, upmc, gilles), ou Kokoro avec la voix `ff_siwis`.
+- Usage prévu :
+  - STT en push-to-talk : on accumule l'audio pendant l'appui et on le transcrit d'un coup au relâchement. La reconnaissance en continu est inutile ici.
+  - TTS phrase par phrase, au fil des `agent_message_chunk` : chaque phrase complète part en synthèse pendant que la suivante arrive.
+- Le crate `voice` exposera des traits `Stt` et `Tts`, pour pouvoir brancher d'autres moteurs et comparer à l'oreille : voix Windows SAPI/WinRT en repli, Kyutai plus tard si besoin.
+- Capture et lecture audio : `cpal` (WASAPI sous Windows).
+- Les modèles sont téléchargés au premier lancement dans le répertoire de données de l'utilisateur, et non versionnés.
 
 ## 10. Latence de la conversation
 
@@ -155,13 +155,12 @@ Estimations à confirmer [S] :
 
 | Étape | Estimation |
 |---|---|
-| STT : du relâchement du bouton au texte final | 0,5 à 0,7 s (délai du modèle 0,5 s, plus le vidage par Marker et silence) |
+| STT : du relâchement du bouton au texte final | 0,1 à 0,3 s avec Parakeet int8 sur CPU, pour quelques secondes de parole |
 | Claude : du prompt au premier `agent_message_chunk`, Haiku, session chaude | 0,7 à 1,5 s avec prompt en `override` et `tools: []` ; 1,5 à 3 s avec le prompt de Claude Code |
-| TTS : du premier texte au premier son | 0,2 à 0,35 s |
-| **Total** | **1,4 à 2,5 s** |
+| TTS : de la première phrase au premier son | environ 0,1 s avec Piper sur CPU (Kokoro un peu plus lent) |
+| **Total** | **0,9 à 2 s** |
 
-La cible de 1,5 s n'est tenable qu'avec le prompt en `override`, le cache de prompt chaud, Haiku sans réflexion et un TTS qui démarre sur les premiers mots. Leviers si ça ne passe pas :
+La cible de 1,5 s devient plausible avec sherpa-onnx (STT et TTS rapides, sans aller-retour réseau), à condition que Claude réponde vite : prompt en `override`, cache de prompt chaud, Haiku sans réflexion, TTS lancé dès la première phrase. Leviers si ça ne passe pas :
 
 - envoyer un accusé court local (pré-enregistré) dès la fin de parole ;
-- commencer la transcription pendant la parole et non au relâchement ;
 - en dernier recours, appeler l'API Messages directement pour la session de conversation, en gardant ACP pour l'analyse.

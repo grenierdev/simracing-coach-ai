@@ -2,7 +2,7 @@
 
 Application de bureau Windows en Rust qui coache le pilote à la voix pendant qu'il roule sur iRacing. Elle compare la télémétrie live à un tour de référence, planifie des consignes par virage et permet de parler au coach en roulant.
 
-Pipeline vocal : STT (Kyutai) → Claude (via ACP) → TTS (Kyutai). Claude accède à la télémétrie par des outils MCP exposés par le programme.
+Pipeline vocal : STT → Claude (via ACP) → TTS. Le STT et le TTS tournent dans le processus avec sherpa-onnx, sans serveur ni Python. Claude accède à la télémétrie par des outils MCP exposés par le programme.
 
 ## État
 
@@ -17,7 +17,7 @@ Pipeline vocal : STT (Kyutai) → Claude (via ACP) → TTS (Kyutai). Claude acc�
 
 ![Jalon 1 : rejeu de la session synthétique](docs/jalon1.png)
 
-Les conclusions des vérifications préalables (crates, versions, ACP, MCP, authentification, Garage61, moshi, latence) sont dans [docs/verifications.md](docs/verifications.md).
+Les conclusions des vérifications préalables (crates, versions, ACP, MCP, authentification, Garage61, STT/TTS, latence) sont dans [docs/verifications.md](docs/verifications.md).
 
 ## Organisation
 
