@@ -5,7 +5,7 @@ use std::sync::Arc;
 use voice::{AudioSink, CpalSink, NullSink, SilentTts, Speaker, Tts};
 
 /// Starts the speech thread. The model is downloaded on first launch.
-pub fn start_speaker(no_voice: bool) -> Arc<Speaker> {
+pub fn start_speaker(no_voice: bool, language: voice::Language) -> Arc<Speaker> {
     let sink: Arc<dyn AudioSink> = if no_voice {
         Arc::new(NullSink::default())
     } else {
@@ -18,32 +18,41 @@ pub fn start_speaker(no_voice: bool) -> Arc<Speaker> {
         }
     };
     Arc::new(Speaker::spawn(
-        move |report| make_tts(no_voice, report),
+        move |report| make_tts(no_voice, language, report),
         sink,
     ))
 }
 
 #[cfg(feature = "voice-sherpa")]
-fn make_tts(no_voice: bool, report: &dyn Fn(String)) -> Result<Box<dyn Tts>, voice::VoiceError> {
-    use voice::models::{PIPER_FR_SIWIS, ensure, models_dir};
+fn make_tts(
+    no_voice: bool,
+    language: voice::Language,
+    report: &dyn Fn(String),
+) -> Result<Box<dyn Tts>, voice::VoiceError> {
+    use voice::models::{ensure, models_dir};
     if no_voice {
         return Ok(Box::new(SilentTts::default()));
     }
     let dir = models_dir();
-    let path = ensure(&PIPER_FR_SIWIS, &dir, |done, total| {
+    let path = ensure(language.tts_model(), &dir, |done, total| {
         let pct = (done * 100).checked_div(total).unwrap_or(0);
-        report(format!("downloading voice: {pct}%"));
+        report(format!("downloading {} voice: {pct}%", language.name()));
     })?;
     report("loading voice".into());
     Ok(Box::new(voice::sherpa::SherpaTts::piper(&path, 2)?))
 }
 
 #[cfg(not(feature = "voice-sherpa"))]
-fn make_tts(_no_voice: bool, _report: &dyn Fn(String)) -> Result<Box<dyn Tts>, voice::VoiceError> {
+fn make_tts(
+    _no_voice: bool,
+    _language: voice::Language,
+    _report: &dyn Fn(String),
+) -> Result<Box<dyn Tts>, voice::VoiceError> {
     Ok(Box::new(SilentTts::default()))
 }
 
 /// Speech recognition: Parakeet v3, downloaded on first launch (~670 MB).
+/// Multilingual: it detects English and French by itself.
 pub fn start_listener() -> voice::Listener {
     voice::Listener::spawn(make_stt)
 }

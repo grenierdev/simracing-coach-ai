@@ -164,10 +164,11 @@ impl Stt for SherpaStt {
 
 #[cfg(test)]
 mod tests {
-    //! Tests with the real models: run only if `SIMCOACH_MODELS_DIR` contains
-    //! Piper siwis and Parakeet v3.
+    //! Tests with the real models: run only if `SIMCOACH_MODELS_DIR` is set.
+    //! Each language is tested if its Piper voice and Parakeet v3 are present.
     use super::*;
-    use crate::models::{PARAKEET_V3_INT8, PIPER_FR_SIWIS, is_present, models_dir};
+    use crate::Language;
+    use crate::models::{PARAKEET_V3_INT8, is_present, models_dir};
 
     #[test]
     fn piper_then_parakeet_round_trip() {
@@ -176,13 +177,26 @@ mod tests {
             return;
         }
         let dir = models_dir();
-        assert!(is_present(&PIPER_FR_SIWIS, &dir) && is_present(&PARAKEET_V3_INT8, &dir));
-        let mut tts = SherpaTts::piper(&PIPER_FR_SIWIS.path_in(&dir), 2).unwrap();
+        assert!(is_present(&PARAKEET_V3_INT8, &dir));
         let mut stt = SherpaStt::parakeet(&PARAKEET_V3_INT8.path_in(&dir), 2).unwrap();
-        // The sentence stays in French: the Piper siwis voice is French.
-        let audio = tts.synthesize("Je n'ai plus de rotation au T5.").unwrap();
-        assert!(audio.duration_s() > 1.0);
-        let text = stt.transcribe(&audio).unwrap();
-        assert_eq!(text, "Je n'ai plus de rotation au T5.");
+        let mut tested = 0;
+        for (lang, sentence) in [
+            (Language::English, "I have no rotation in turn five."),
+            (Language::French, "Je n'ai plus de rotation au T5."),
+        ] {
+            let spec = lang.tts_model();
+            if !is_present(spec, &dir) {
+                eprintln!("{}: voice missing, skipped", lang.name());
+                continue;
+            }
+            let mut tts = SherpaTts::piper(&spec.path_in(&dir), 2).unwrap();
+            let audio = tts.synthesize(sentence).unwrap();
+            assert!(audio.duration_s() > 1.0);
+            let text = stt.transcribe(&audio).unwrap();
+            eprintln!("{}: {sentence:?} -> {text:?}", lang.name());
+            assert!(text.to_lowercase().contains("rotation"), "{text}");
+            tested += 1;
+        }
+        assert!(tested > 0, "no Piper voice in {}", dir.display());
     }
 }

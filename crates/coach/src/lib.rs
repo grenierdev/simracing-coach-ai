@@ -44,6 +44,17 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/CLAUDE.md");
 /// System prompt of the analysis session (planning the next lap).
 pub const DEFAULT_ANALYSIS_PROMPT: &str = include_str!("../prompts/ANALYSIS.md");
 
+/// Appends the reply-language instruction to a system prompt. `language` is
+/// the English name of the voice language ("French").
+pub fn with_language(prompt: &str, language: &str) -> String {
+    format!(
+        "{}\n\n## Language\n\nThe driver speaks {language}. Always reply in {language}, \
+         including the text of the cues passed to `say` and `update_plan`. \
+         The `[Context]` and `[Analysis]` blocks stay in English.\n",
+        prompt.trim_end()
+    )
+}
+
 /// Prefix of our MCP server's tools in Claude Code.
 pub fn mcp_tool_prefix(server: &str) -> String {
     format!("mcp__{server}__")
@@ -470,4 +481,14 @@ async fn run(
         Ok(()) => AgentStatus::Stopped,
         Err(e) => AgentStatus::Failed(e.to_string()),
     }));
+}
+
+#[cfg(test)]
+mod language_tests {
+    #[test]
+    fn language_section_is_appended() {
+        let p = super::with_language("# Coach\n\nBe brief.\n\n", "French");
+        assert!(p.starts_with("# Coach\n\nBe brief.\n\n## Language\n"));
+        assert!(p.contains("Always reply in French"));
+    }
 }

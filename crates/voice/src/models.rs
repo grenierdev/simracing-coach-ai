@@ -38,6 +38,12 @@ pub const PIPER_FR_SIWIS: ModelSpec = ModelSpec {
     keep: |p| !p.ends_with(".py") && !p.ends_with(".sh") && !p.starts_with('.'),
 };
 
+/// English Piper voice "ljspeech" (female, trained on the public-domain LJ Speech dataset).
+pub const PIPER_EN_LJSPEECH: ModelSpec = ModelSpec {
+    repo: "csukuangfj/vits-piper-en_US-ljspeech-medium",
+    keep: |p| !p.ends_with(".py") && !p.ends_with(".sh") && !p.starts_with('.'),
+};
+
 /// Parakeet TDT 0.6B v3 speech recognition, int8 (25 languages including French and English).
 pub const PARAKEET_V3_INT8: ModelSpec = ModelSpec {
     repo: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",

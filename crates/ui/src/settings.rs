@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use input::Binding;
 use serde::{Deserialize, Serialize};
+use voice::Language;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -15,6 +16,8 @@ pub struct Settings {
     pub speak_replies: bool,
     /// The analysis session prepares the cues for the next lap.
     pub auto_planning: bool,
+    /// Voice language: speech recognition, text-to-speech, coach replies.
+    pub language: Language,
 }
 
 impl Default for Settings {
@@ -23,6 +26,7 @@ impl Default for Settings {
             ptt: None,
             speak_replies: true,
             auto_planning: true,
+            language: Language::default(),
         }
     }
 }
@@ -78,9 +82,12 @@ mod tests {
             }),
             speak_replies: false,
             auto_planning: false,
+            language: Language::French,
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
         std::fs::remove_file(&path).unwrap();
+        let text = toml::to_string(&s).unwrap();
+        assert!(text.contains("language = \"fr\""), "{text}");
     }
 }

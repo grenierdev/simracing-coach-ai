@@ -9,6 +9,7 @@
 //! - [`models`]: model download from Hugging Face;
 //! - `sherpa` (feature): sherpa-onnx engines.
 
+pub mod language;
 pub mod listener;
 pub mod models;
 pub mod output;
@@ -19,6 +20,7 @@ pub mod speaker;
 
 use thiserror::Error;
 
+pub use language::Language;
 pub use listener::{Listener, ListenerStatus, Transcript};
 pub use output::{AudioSink, CpalSink, NullSink};
 pub use recorder::{Microphone, Recorder};

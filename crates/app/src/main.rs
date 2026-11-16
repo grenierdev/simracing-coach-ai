@@ -12,6 +12,7 @@
 //! simcoach ... --model sonnet       conversation model (default: haiku)
 //! simcoach ... --analysis-model opus  planning model (default: sonnet)
 //! simcoach ... --no-planning        without analysis session
+//! simcoach ... --language fr        voice language, en or fr (default: settings)
 //! simcoach --write-synthetic f.ibt writes the synthetic session to a file
 //! simcoach --write-synthetic-reference <folder>
 //!                                  writes a synthetic reference lap (Garage61 CSV)
@@ -43,6 +44,7 @@ struct Args {
     write_synthetic_reference: Option<PathBuf>,
     speed: f64,
     looping: bool,
+    language: Option<voice::Language>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -84,9 +86,16 @@ fn parse_args() -> anyhow::Result<Args> {
                     .context("--speed expects a number")?
             }
             "--loop" => args.looping = true,
+            "--language" => {
+                let v = it.next().context("--language <en|fr>")?;
+                args.language =
+                    Some(voice::Language::parse(&v).with_context(|| {
+                        format!("--language: unknown language \"{v}\" (en or fr)")
+                    })?);
+            }
             "-h" | "--help" => {
                 println!(
-                    "simcoach [--replay file.ibt [--speed X] [--loop]] [--synthetic] [--reference file.csv|.ibt] [--plan plan.toml] [--no-voice] [--no-agent] [--model haiku] [--analysis-model sonnet] [--no-planning] [--write-synthetic file.ibt] [--write-synthetic-reference folder]"
+                    "simcoach [--replay file.ibt [--speed X] [--loop]] [--synthetic] [--reference file.csv|.ibt] [--plan plan.toml] [--no-voice] [--no-agent] [--model haiku] [--analysis-model sonnet] [--no-planning] [--language en|fr] [--write-synthetic file.ibt] [--write-synthetic-reference folder]"
                 );
                 std::process::exit(0);
             }
@@ -163,6 +172,9 @@ fn main() -> anyhow::Result<()> {
         (args.synthetic && demo.exists()).then_some(demo)
     });
     let no_voice = args.no_voice;
+    let settings = ui::settings::Settings::load();
+    let language = args.language.unwrap_or(settings.language);
+    tracing::info!("voice language: {}", language.name());
     let agent_options = agent::AgentOptions {
         enabled: !args.no_agent,
         model: args.model.clone().unwrap_or_else(|| "haiku".into()),
@@ -171,6 +183,7 @@ fn main() -> anyhow::Result<()> {
             .analysis_model
             .clone()
             .unwrap_or_else(|| "sonnet".into()),
+        language,
     };
 
     ui::run(
@@ -178,13 +191,12 @@ fn main() -> anyhow::Result<()> {
         ui::StartOptions { reference, plan },
         move || {
             let hub = TelemetryHub::spawn(source, TelemetryHubConfig::default());
-            let speaker = speech::start_speaker(no_voice);
+            let speaker = speech::start_speaker(no_voice, language);
             let triggers = std::sync::Arc::new(triggers::TriggerRuntime::spawn(
                 hub.subscribe_samples(),
                 Box::new(speech::SpeakerOutput(speaker.clone())),
             ));
             let agent = agent::start(hub.snapshot_handle(), triggers.clone(), &agent_options);
-            let settings = ui::settings::Settings::load();
             let planner = agent.analysis.clone().map(|analysis| {
                 let snap = hub.snapshot_handle();
                 ui::planner::Planner::spawn(
@@ -235,6 +247,7 @@ fn main() -> anyhow::Result<()> {
                 recorder,
                 mic_name,
                 settings,
+                language,
                 planner,
                 agent: agent.agent,
                 mcp_url: agent.mcp_url,

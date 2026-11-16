@@ -59,6 +59,8 @@ pub struct AgentOptions {
     /// Analysis session (planning of the next lap).
     pub analysis: bool,
     pub analysis_model: String,
+    /// Language of the replies.
+    pub language: voice::Language,
 }
 
 /// Startup result: what the UI displays and drives.
@@ -80,10 +82,15 @@ fn session_dir(role: &str) -> PathBuf {
 }
 
 /// Reads the coach prompt; writes the default version if it does not exist.
+/// The French prompt written by v0.1.0 is replaced (and kept as a backup):
+/// the reply language is now a setting.
 fn system_prompt(dir: &std::path::Path, default: &str) -> String {
     let path = dir.join("CLAUDE.md");
     if let Ok(text) = std::fs::read_to_string(&path) {
-        return text;
+        if !text.starts_with("# Coach de pilotage") {
+            return text;
+        }
+        let _ = std::fs::rename(&path, dir.join("CLAUDE.v0.1.md"));
     }
     if std::fs::create_dir_all(dir).is_ok() {
         let _ = std::fs::write(&path, default);
@@ -154,7 +161,10 @@ pub fn start(
             model: Some(options.model.clone()),
             disable_thinking: true,
             env: vec![],
-            system_prompt: system_prompt(&cwd, coach::DEFAULT_SYSTEM_PROMPT),
+            system_prompt: coach::with_language(
+                &system_prompt(&cwd, coach::DEFAULT_SYSTEM_PROMPT),
+                options.language.name(),
+            ),
             cwd,
             mcp: Some(endpoint.clone()),
         };
@@ -170,7 +180,10 @@ pub fn start(
             model: Some(options.analysis_model.clone()),
             disable_thinking: false,
             env: vec![],
-            system_prompt: system_prompt(&cwd, coach::DEFAULT_ANALYSIS_PROMPT),
+            system_prompt: coach::with_language(
+                &system_prompt(&cwd, coach::DEFAULT_ANALYSIS_PROMPT),
+                options.language.name(),
+            ),
             cwd,
             mcp: Some(McpEndpoint {
                 name: mcp::SERVER_NAME.into(),

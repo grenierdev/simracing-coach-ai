@@ -73,6 +73,9 @@ pub struct Services {
     pub recorder: Option<Arc<Recorder>>,
     pub mic_name: Option<String>,
     pub settings: Settings,
+    /// Voice language in use (settings or `--language`); a change in the
+    /// settings applies on the next launch.
+    pub language: voice::Language,
     /// Automatic planning of the next lap (absent with `--no-planning`).
     pub planner: Option<Planner>,
 }
@@ -140,6 +143,7 @@ pub struct CoachView {
     recorder: Option<Arc<Recorder>>,
     mic_name: Option<String>,
     settings: Settings,
+    language: voice::Language,
     planner: Option<Planner>,
     capture: Option<crossbeam_channel::Receiver<CaptureResult>>,
     recording: bool,
@@ -170,6 +174,7 @@ impl CoachView {
             recorder,
             mic_name,
             settings,
+            language,
             planner,
         } = services;
         let refresh = cx.spawn(async move |this, cx| {
@@ -229,6 +234,7 @@ impl CoachView {
             recorder,
             mic_name,
             settings,
+            language,
             planner,
             capture: None,
             recording: false,
@@ -292,6 +298,11 @@ impl CoachView {
         if let Some(p) = &self.planner {
             p.set_enabled(self.settings.auto_planning);
         }
+        let _ = self.settings.save();
+    }
+
+    fn cycle_language(&mut self) {
+        self.settings.language = self.settings.language.next();
         let _ = self.settings.save();
     }
 
@@ -688,8 +699,25 @@ impl CoachView {
                             view.toggle_speak_replies();
                             cx.notify();
                         })),
+                    )
+                    .child(
+                        button("language", format!("Voice: {}", self.settings.language)).on_click(
+                            cx.listener(|view, _, _, cx| {
+                                view.cycle_language();
+                                cx.notify();
+                            }),
+                        ),
                     ),
             )
+            .children((self.settings.language != self.language).then(|| {
+                div()
+                    .text_xs()
+                    .text_color(color(theme::WARN))
+                    .child(format!(
+                        "Voice language {} after restart (current: {})",
+                        self.settings.language, self.language
+                    ))
+            }))
             .children(self.mic_name.as_ref().map(|m| {
                 div()
                     .text_xs()
