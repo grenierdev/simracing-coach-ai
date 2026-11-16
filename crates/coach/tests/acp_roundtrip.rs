@@ -184,7 +184,7 @@ fn mock_agent(seen: Arc<Mutex<Seen>>) -> impl agent_client_protocol::ConnectTo<C
                             .unwrap()
                             .to_string();
                         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-                        let worst = v["temps_perdu_par_virage"][0]["virage"]
+                        let worst = v["time_lost_by_corner"][0]["corner"]
                             .as_str()
                             .unwrap()
                             .to_string();
@@ -276,7 +276,7 @@ fn full_turn_with_mcp_call_and_permissions() {
         assert_eq!(header, format!("Bearer {}", server.token));
     }
 
-    let turn = agent.prompt("[Contexte] tour 2\n[Pilote] où je perds du temps ?");
+    let turn = agent.prompt("[Context] lap 2\n[Driver] where am I losing time?");
     wait_for(
         &agent,
         |e| matches!(e, CoachEvent::TurnEnd { .. }),

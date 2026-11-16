@@ -215,9 +215,9 @@ fn push_to_talk_round_trip() {
 
     let p = prompts.lock().unwrap().clone();
     assert_eq!(p.len(), 1);
-    assert!(p[0].starts_with("[Contexte] tour"), "{}", p[0]);
+    assert!(p[0].starts_with("[Context] lap"), "{}", p[0]);
     assert!(
-        p[0].ends_with("[Pilote] je n'ai plus de rotation au T5"),
+        p[0].ends_with("[Driver] je n'ai plus de rotation au T5"),
         "{}",
         p[0]
     );

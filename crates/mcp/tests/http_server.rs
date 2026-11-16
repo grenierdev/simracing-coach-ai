@@ -115,13 +115,13 @@ async fn tools_over_http_with_bearer_token() {
         .await
         .unwrap();
     let v: Value = serde_json::from_str(&text_of(&r)).unwrap();
-    assert_eq!(v["temps_perdu_par_virage"].as_array().unwrap().len(), 6);
+    assert_eq!(v["time_lost_by_corner"].as_array().unwrap().len(), 6);
 
     let args = |v: Value| v.as_object().unwrap().clone();
     let r = client
         .call_tool(
             CallToolRequestParams::new("get_corner_trace").with_arguments(args(json!({
-                "corner": "T4", "channels": ["vitesse", "delta"]
+                "corner": "T4", "channels": ["speed", "delta"]
             }))),
         )
         .await
@@ -138,32 +138,32 @@ async fn tools_over_http_with_bearer_token() {
         .await
         .unwrap();
     assert_eq!(r.is_error, Some(true));
-    assert!(text_of(&r).contains("virage inconnu"));
+    assert!(text_of(&r).contains("unknown corner"));
 
     let r = client
         .call_tool(CallToolRequestParams::new("update_plan").with_arguments(args(json!({
-            "consignes": [{"id": "t5", "virage": "T5", "decalage_m": -200, "texte": "Garde de la vitesse."}],
-            "mode": "remplacer"
+            "triggers": [{"id": "t5", "corner": "T5", "offset_m": -200, "text": "Carry more speed."}],
+            "mode": "replace"
         }))))
         .await
         .unwrap();
     assert_ne!(r.is_error, Some(true), "{}", text_of(&r));
     assert_eq!(
-        data.plan.lock().unwrap().as_ref().unwrap().consignes.len(),
+        data.plan.lock().unwrap().as_ref().unwrap().triggers.len(),
         1
     );
 
     let r = client
         .call_tool(
             CallToolRequestParams::new("update_plan").with_arguments(args(json!({
-                "consignes": [{"virage": "T99", "texte": "x"}]
+                "triggers": [{"corner": "T99", "text": "x"}]
             }))),
         )
         .await
         .unwrap();
     assert_eq!(r.is_error, Some(true));
     assert_eq!(
-        data.plan.lock().unwrap().as_ref().unwrap().consignes.len(),
+        data.plan.lock().unwrap().as_ref().unwrap().triggers.len(),
         1,
         "plan inchangé"
     );
@@ -171,7 +171,7 @@ async fn tools_over_http_with_bearer_token() {
     client
         .call_tool(
             CallToolRequestParams::new("say")
-                .with_arguments(args(json!({"texte": "Je regarde le T5."}))),
+                .with_arguments(args(json!({"text": "Je regarde le T5."}))),
         )
         .await
         .unwrap();
@@ -199,25 +199,21 @@ fn merge_plan_replaces_same_id() {
     use triggers::TriggerSpec;
     let spec = |id: &str, t: &str| TriggerSpec {
         id: Some(id.into()),
-        texte: t.into(),
-        virage: None,
-        ancre: None,
-        decalage_m: None,
+        text: t.into(),
+        corner: None,
+        anchor: None,
+        offset_m: None,
         position: Some(0.1),
-        priorite: None,
-        repetition: None,
+        priority: None,
+        repeat: None,
         condition: None,
-        expire_apres_tours: None,
-        retard_max_m: None,
+        expire_after_laps: None,
+        max_delay_m: None,
     };
-    let p = merge_plan(
-        None,
-        vec![spec("a", "1"), spec("b", "2")],
-        PlanMode::Ajouter,
-    );
-    let p = merge_plan(Some(p), vec![spec("a", "nouveau")], PlanMode::Ajouter);
-    assert_eq!(p.consignes.len(), 2);
-    assert_eq!(p.consignes[0].texte, "nouveau");
-    let p = merge_plan(Some(p), vec![spec("c", "3")], PlanMode::Remplacer);
-    assert_eq!(p.consignes.len(), 1);
+    let p = merge_plan(None, vec![spec("a", "1"), spec("b", "2")], PlanMode::Add);
+    let p = merge_plan(Some(p), vec![spec("a", "nouveau")], PlanMode::Add);
+    assert_eq!(p.triggers.len(), 2);
+    assert_eq!(p.triggers[0].text, "nouveau");
+    let p = merge_plan(Some(p), vec![spec("c", "3")], PlanMode::Replace);
+    assert_eq!(p.triggers.len(), 1);
 }

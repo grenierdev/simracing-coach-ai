@@ -1,4 +1,4 @@
-//! Serveur rmcp : déclaration des outils et service HTTP.
+//! rmcp server: tool declarations and HTTP service.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,8 +21,7 @@ use triggers::{Plan, SayWhen, TrackContext, TriggerSpec, resolve};
 use crate::CoachData;
 use crate::tools::{self, ToolError};
 
-/// Nom du serveur dans `mcpServers` : les outils apparaissent chez Claude sous
-/// `mcp__coach__<outil>`.
+/// Server name in `mcpServers`: Claude sees the tools as `mcp__coach__<tool>`.
 pub const SERVER_NAME: &str = "coach";
 
 #[derive(Clone)]
@@ -32,22 +31,22 @@ pub struct CoachMcp {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CornerSummaryArgs {
-    /// Virage : « T5 » (ou « 5 »).
+    /// Corner: "T5" (or "5").
     pub corner: String,
-    /// Numéros des tours à analyser ; par défaut les 3 derniers tours complets.
+    /// Lap numbers to analyze; defaults to the last 3 complete laps.
     #[serde(default)]
     pub laps: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CornerTraceArgs {
-    /// Virage : « T5 » (ou « 5 »).
+    /// Corner: "T5" (or "5").
     pub corner: String,
-    /// Canaux : vitesse, gaz, frein, volant, lacet, acc_lat, rapport, delta.
-    /// Par défaut : vitesse, gaz, frein.
+    /// Channels: speed, throttle, brake, steering, yaw_rate, lat_accel, gear, delta.
+    /// Default: speed, throttle, brake.
     #[serde(default)]
     pub channels: Vec<String>,
-    /// Numéro du tour ; par défaut le dernier tour complet.
+    /// Lap number; defaults to the last complete lap.
     #[serde(default)]
     pub lap: Option<i32>,
 }
@@ -55,18 +54,18 @@ pub struct CornerTraceArgs {
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanMode {
-    /// Remplace tout le plan.
-    Remplacer,
-    /// Ajoute les consignes ; une consigne de même `id` est remplacée.
+    /// Replaces the whole coach plan.
+    Replace,
+    /// Adds the triggers; a trigger with the same `id` is replaced.
     #[default]
-    Ajouter,
+    Add,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdatePlanArgs {
-    /// Consignes à placer sur le tour.
-    pub consignes: Vec<TriggerSpec>,
-    /// « remplacer » ou « ajouter » (défaut).
+    /// Triggers to place on the lap.
+    pub triggers: Vec<TriggerSpec>,
+    /// "replace" or "add" (default).
     #[serde(default)]
     pub mode: PlanMode,
 }
@@ -74,31 +73,31 @@ pub struct UpdatePlanArgs {
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum When {
-    /// Dès que possible, hors zone de freinage.
+    /// As soon as possible, outside braking zones.
     #[default]
-    Maintenant,
-    /// Sur la prochaine portion où la phrase a le temps d'être dite.
-    ProchaineLigneDroite,
-    /// À une position : `virage` (+ `ancre`, `decalage_m`) ou `position`.
+    Now,
+    /// On the next stretch where the sentence has time to be spoken.
+    NextStraight,
+    /// At a position: `corner` (+ `anchor`, `offset_m`) or `position`.
     Position,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SayArgs {
-    /// Phrase à dire : courte, en français, sans mise en forme.
-    pub texte: String,
+    /// Sentence to speak: short, plain, in the voice language.
+    pub text: String,
     #[serde(default)]
-    pub quand: When,
-    /// Pour `quand = position` : virage de repère (« T5 »).
+    pub when: When,
+    /// For `when = position`: reference corner ("T5").
     #[serde(default)]
-    pub virage: Option<String>,
-    /// Pour `quand = position` : freinage, entree, apex ou sortie.
+    pub corner: Option<String>,
+    /// For `when = position`: braking, entry, apex or exit.
     #[serde(default)]
-    pub ancre: Option<triggers::Anchor>,
-    /// Pour `quand = position` : décalage en mètres (négatif = avant).
+    pub anchor: Option<triggers::Anchor>,
+    /// For `when = position`: offset in meters (negative = before).
     #[serde(default)]
-    pub decalage_m: Option<f64>,
-    /// Pour `quand = position` : position absolue (LapDistPct, 0 à 1).
+    pub offset_m: Option<f64>,
+    /// For `when = position`: absolute position (LapDistPct, 0 to 1).
     #[serde(default)]
     pub position: Option<f64>,
 }
@@ -111,26 +110,26 @@ fn tool_err(e: ToolError) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::error(vec![Content::text(e.0)]))
 }
 
-/// Applique `consignes` au plan courant (`mode`) et vérifie qu'il se résout sur la carte.
+/// Applies `specs` to the current coach plan according to `mode`.
 pub fn merge_plan(current: Option<Plan>, specs: Vec<TriggerSpec>, mode: PlanMode) -> Plan {
     let mut plan = match mode {
-        PlanMode::Remplacer => Plan {
-            reglages: current.map(|p| p.reglages).unwrap_or_default(),
-            consignes: vec![],
+        PlanMode::Replace => Plan {
+            settings: current.map(|p| p.settings).unwrap_or_default(),
+            triggers: vec![],
         },
-        PlanMode::Ajouter => current.unwrap_or_default(),
+        PlanMode::Add => current.unwrap_or_default(),
     };
     for spec in specs {
         if let Some(id) = &spec.id
             && let Some(existing) = plan
-                .consignes
+                .triggers
                 .iter_mut()
                 .find(|c| c.id.as_deref() == Some(id.as_str()))
         {
             *existing = spec;
             continue;
         }
-        plan.consignes.push(spec);
+        plan.triggers.push(spec);
     }
     plan
 }
@@ -138,7 +137,7 @@ pub fn merge_plan(current: Option<Plan>, specs: Vec<TriggerSpec>, mode: PlanMode
 #[tool_router(server_handler)]
 impl CoachMcp {
     #[tool(
-        description = "Vue d'ensemble de la session : derniers tours, delta à la référence et temps perdu par virage, classé du plus coûteux au moins coûteux."
+        description = "Session overview: recent laps, delta to the reference and time lost per corner, ranked from most to least costly."
     )]
     async fn get_session_overview(&self) -> Result<CallToolResult, ErrorData> {
         let t = Instant::now();
@@ -153,7 +152,7 @@ impl CoachMcp {
     }
 
     #[tool(
-        description = "Métriques d'un virage face à la référence, par tour : temps perdu, point de freinage, trail braking, vitesse mini, reprise des gaz, roue libre, accélération latérale, rapports de rotation (entrée et sortie)."
+        description = "Corner metrics against the reference, per lap: time lost, braking point, trail braking, minimum speed, throttle pickup, coasting, lateral acceleration, rotation ratios (entry and exit)."
     )]
     async fn get_corner_summary(
         &self,
@@ -176,7 +175,7 @@ impl CoachMcp {
     }
 
     #[tool(
-        description = "Traces d'un virage (au plus 100 points par canal), pour un tour et pour la référence, en fonction de la distance depuis l'entrée du virage."
+        description = "Corner traces (at most 100 points per channel) for a lap and for the reference, as a function of distance from the corner entry."
     )]
     async fn get_corner_trace(
         &self,
@@ -200,14 +199,14 @@ impl CoachMcp {
     }
 
     #[tool(
-        description = "Remplace ou complète les consignes du coach dites automatiquement aux tours suivants (le plan du pilote n'est pas modifié). Chaque consigne est placée par virage (ancre + décalage en mètres) ou par position absolue. Le coach se tait de toute façon en zone de freinage."
+        description = "Replaces or extends the coach triggers spoken automatically on the next laps (the driver's own plan is never modified). Each trigger is placed by corner (anchor + offset in meters) or by absolute position. The coach always stays silent in braking zones."
     )]
     async fn update_plan(
         &self,
         Parameters(args): Parameters<UpdatePlanArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let t = Instant::now();
-        let plan = merge_plan(self.data.coach_plan(), args.consignes, args.mode);
+        let plan = merge_plan(self.data.coach_plan(), args.triggers, args.mode);
         let analyzer = self.data.analyzer();
         let ctx = analyzer.as_ref().map(|a| TrackContext {
             model: &a.model,
@@ -226,63 +225,63 @@ impl CoachMcp {
                     .map(|t| {
                         json!({
                             "id": t.id,
-                            "virage": t.corner,
+                            "corner": t.corner,
                             "position_pct": (t.at_pct * 1000.0).round() / 10.0,
-                            "texte": t.text,
+                            "text": t.text,
                         })
                     })
                     .collect();
                 self.data.apply_coach_plan(plan);
-                ok_json(json!({ "consignes_actives": summary }))
+                ok_json(json!({ "active_triggers": summary }))
             }
-            Err(e) => tool_err(ToolError(format!("plan refusé : {e}"))),
+            Err(e) => tool_err(ToolError(format!("plan rejected: {e}"))),
         }
     }
 
     #[tool(
-        description = "Dit une phrase au pilote : maintenant (dès que possible hors freinage), à la prochaine ligne droite, ou à une position du tour."
+        description = "Speaks a sentence to the driver: now (as soon as possible outside braking), on the next straight, or at a position on the lap."
     )]
     async fn say(
         &self,
         Parameters(args): Parameters<SayArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let t = Instant::now();
-        let text = args.texte.trim().to_string();
+        let text = args.text.trim().to_string();
         if text.is_empty() {
-            return tool_err(ToolError("texte vide".into()));
+            return tool_err(ToolError("empty text".into()));
         }
-        let when = match args.quand {
-            When::Maintenant => SayWhen::Now,
-            When::ProchaineLigneDroite => SayWhen::NextStraight,
+        let when = match args.when {
+            When::Now => SayWhen::Now,
+            When::NextStraight => SayWhen::NextStraight,
             When::Position => {
-                if args.virage.is_none() && args.position.is_none() {
+                if args.corner.is_none() && args.position.is_none() {
                     return tool_err(ToolError(
-                        "position : indiquer « virage » ou « position »".into(),
+                        "position: give \"corner\" or \"position\"".into(),
                     ));
                 }
                 SayWhen::At(Box::new(TriggerSpec {
                     id: None,
-                    texte: text.clone(),
-                    virage: args.virage,
-                    ancre: args.ancre,
-                    decalage_m: args.decalage_m,
+                    text: text.clone(),
+                    corner: args.corner,
+                    anchor: args.anchor,
+                    offset_m: args.offset_m,
                     position: args.position,
-                    priorite: Some(8),
-                    repetition: None,
+                    priority: Some(8),
+                    repeat: None,
                     condition: None,
-                    expire_apres_tours: None,
-                    retard_max_m: None,
+                    expire_after_laps: None,
+                    max_delay_m: None,
                 }))
             }
         };
         self.data.say(text, when);
         self.data
             .tool_called("say", true, t.elapsed().as_secs_f64() * 1e3);
-        ok_json(json!({ "programme": true }))
+        ok_json(json!({ "scheduled": true }))
     }
 }
 
-/// Serveur en cours d'exécution.
+/// Running server.
 pub struct McpServerHandle {
     pub url: String,
     pub token: String,
@@ -291,7 +290,7 @@ pub struct McpServerHandle {
 }
 
 impl McpServerHandle {
-    /// Démarre le serveur sur `127.0.0.1:<port libre>`.
+    /// Starts the server on `127.0.0.1:<free port>`.
     pub async fn start(data: Arc<dyn CoachData>) -> std::io::Result<Self> {
         let mut raw = [0u8; 24];
         getrandom::fill(&mut raw).map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -331,7 +330,7 @@ impl McpServerHandle {
                 })
                 .await;
             if let Err(e) = r {
-                tracing::warn!("serveur MCP : {e}");
+                tracing::warn!("MCP server: {e}");
             }
         });
         Ok(McpServerHandle {

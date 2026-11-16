@@ -1,22 +1,22 @@
-//! Plan de consignes : format de fichier (TOML) et résolution des positions.
+//! Cue plan: file format (TOML) and position resolution.
 //!
 //! ```toml
-//! [reglages]
-//! marge_silence_m = 30          # silence à partir de 30 m avant le freinage
-//! silence_jusqu_a = "apex"      # "relachement", "apex" ou "sortie"
+//! [settings]
+//! quiet_lead_m = 30          # silence from 30 m before the braking point
+//! quiet_until = "apex"       # "brake_release", "apex" or "exit"
 //!
-//! [[consigne]]
-//! virage = "T4"                 # virage de la carte de la piste
-//! ancre = "freinage"            # "freinage", "entree", "apex" ou "sortie"
-//! decalage_m = -250             # 250 m avant l'ancre
-//! texte = "Épingle : freine au panneau de cent."
-//! priorite = 7                  # 0 à 9
-//! repetition = "chaque_tour"    # "une_fois", "chaque_tour" ou { tours = 3 }
-//! condition = { delta_au_dessus = 0.2 }
+//! [[trigger]]
+//! corner = "T4"              # corner of the track map
+//! anchor = "braking"         # "braking", "entry", "apex" or "exit"
+//! offset_m = -250            # 250 m before the anchor
+//! text = "Hairpin: brake at the hundred board."
+//! priority = 7               # 0 to 9
+//! repeat = "every_lap"       # "once", "every_lap" or { laps = 3 }
+//! condition = { delta_above = 0.2 }
 //!
-//! [[consigne]]
-//! position = 0.02               # position absolue (LapDistPct), sans virage
-//! texte = "Nouveau tour."
+//! [[trigger]]
+//! position = 0.02            # absolute position (LapDistPct), no corner
+//! text = "New lap."
 //! ```
 
 use analysis::{CornerMetrics, TrackModel};
@@ -26,117 +26,117 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PlanError {
-    #[error("lecture du plan : {0}")]
+    #[error("reading the plan: {0}")]
     Io(#[from] std::io::Error),
-    #[error("plan invalide : {0}")]
+    #[error("invalid plan: {0}")]
     Parse(#[from] toml::de::Error),
-    #[error("consigne « {id} » : {msg}")]
+    #[error("trigger \"{id}\": {msg}")]
     Invalid { id: String, msg: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Anchor {
-    /// Début du freinage de la référence (début du virage s'il n'y a pas de freinage).
+    /// Reference braking point (corner entry if the reference does not brake).
     #[default]
-    Freinage,
-    /// Début géométrique du virage.
-    Entree,
-    /// Point de vitesse minimale.
+    Braking,
+    /// Geometric start of the corner.
+    Entry,
+    /// Minimum speed point.
     Apex,
-    /// Fin géométrique du virage.
-    Sortie,
+    /// Geometric end of the corner.
+    Exit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum QuietUntil {
-    /// Jusqu'au relâchement du frein.
-    Relachement,
-    /// Jusqu'au point de vitesse minimale.
+    /// Until the brake is released.
+    BrakeRelease,
+    /// Until the minimum speed point.
     #[default]
     Apex,
-    /// Jusqu'à la fin du virage.
-    Sortie,
+    /// Until the end of the corner.
+    Exit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Repeat {
-    UneFois,
+    Once,
     #[default]
-    ChaqueTour,
-    /// Au plus `tours` fois.
-    Tours(u32),
+    EveryLap,
+    /// At most `laps` times.
+    Laps(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Condition {
-    VitesseAuDessusKmh(f64),
-    VitesseEnDessousKmh(f64),
-    /// Delta live face à la référence au-dessus de N secondes (en retard).
-    DeltaAuDessus(f64),
-    /// Delta live en dessous de N secondes (en avance si négatif).
-    DeltaEnDessous(f64),
-    /// À partir du tour N.
-    TourMinimum(i32),
+    SpeedAboveKmh(f64),
+    SpeedBelowKmh(f64),
+    /// Live delta to the reference above N seconds (behind).
+    DeltaAbove(f64),
+    /// Live delta below N seconds (ahead when negative).
+    DeltaBelow(f64),
+    /// From lap N onwards.
+    MinLap(i32),
 }
 
 impl Condition {
     pub fn holds(&self, speed_mps: f32, live_delta: Option<f64>, lap: i32) -> bool {
         match *self {
-            Condition::VitesseAuDessusKmh(v) => speed_mps as f64 * 3.6 > v,
-            Condition::VitesseEnDessousKmh(v) => (speed_mps as f64 * 3.6) < v,
-            Condition::DeltaAuDessus(d) => live_delta.is_some_and(|x| x > d),
-            Condition::DeltaEnDessous(d) => live_delta.is_some_and(|x| x < d),
-            Condition::TourMinimum(n) => lap >= n,
+            Condition::SpeedAboveKmh(v) => speed_mps as f64 * 3.6 > v,
+            Condition::SpeedBelowKmh(v) => (speed_mps as f64 * 3.6) < v,
+            Condition::DeltaAbove(d) => live_delta.is_some_and(|x| x > d),
+            Condition::DeltaBelow(d) => live_delta.is_some_and(|x| x < d),
+            Condition::MinLap(n) => lap >= n,
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 pub struct PlanSettings {
-    /// Marge de silence avant le point de freinage, m.
-    pub marge_silence_m: Option<f64>,
-    pub silence_jusqu_a: Option<QuietUntil>,
-    /// Distance maximale après la position prévue pour dire une consigne, m.
-    pub retard_max_m: Option<f64>,
+    /// Silence margin before the braking point, m.
+    pub quiet_lead_m: Option<f64>,
+    pub quiet_until: Option<QuietUntil>,
+    /// Maximum distance past the planned position to still speak a trigger, m.
+    pub max_delay_m: Option<f64>,
 }
 
-/// Une consigne du plan.
+/// One trigger of the plan.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TriggerSpec {
-    /// Identifiant (facultatif) ; une consigne de même id est remplacée.
+    /// Identifier (optional); a trigger with the same id is replaced.
     pub id: Option<String>,
-    /// Phrase dite au pilote : courte, en français, sans mise en forme.
-    pub texte: String,
-    /// Virage de la carte (« T5 »). Ignoré si `position` est donnée.
-    pub virage: Option<String>,
-    /// Point du virage servant de repère (défaut : freinage).
-    pub ancre: Option<Anchor>,
-    /// Décalage par rapport à l'ancre, m ; négatif = avant (défaut : -150).
-    pub decalage_m: Option<f64>,
-    /// Position absolue sur le tour (LapDistPct, 0 à 1).
+    /// Sentence spoken to the driver: short, plain, in the voice language.
+    pub text: String,
+    /// Corner of the track map ("T5"). Ignored when `position` is set.
+    pub corner: Option<String>,
+    /// Point of the corner used as reference (default: braking).
+    pub anchor: Option<Anchor>,
+    /// Offset from the anchor, m; negative = before (default: -150).
+    pub offset_m: Option<f64>,
+    /// Absolute position on the lap (LapDistPct, 0 to 1).
     pub position: Option<f64>,
-    /// Priorité 0 à 9 (défaut : 5).
-    pub priorite: Option<u8>,
-    /// Répétition (défaut : chaque tour).
-    pub repetition: Option<Repeat>,
-    /// Condition facultative, évaluée au passage de la position.
+    /// Priority 0 to 9 (default: 5).
+    pub priority: Option<u8>,
+    /// Repetition (default: every lap).
+    pub repeat: Option<Repeat>,
+    /// Optional condition, evaluated when the position is crossed.
     pub condition: Option<Condition>,
-    /// Expire après N tours à compter de l'activation du plan.
-    pub expire_apres_tours: Option<u32>,
-    /// Distance maximale après la position prévue pour dire la consigne, m.
-    pub retard_max_m: Option<f64>,
+    /// Expires after N laps from the moment the plan is activated.
+    pub expire_after_laps: Option<u32>,
+    /// Maximum distance past the planned position to still speak it, m.
+    pub max_delay_m: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 pub struct Plan {
     #[serde(default)]
-    pub reglages: PlanSettings,
-    #[serde(default, rename = "consigne")]
-    pub consignes: Vec<TriggerSpec>,
+    pub settings: PlanSettings,
+    #[serde(default, rename = "trigger")]
+    pub triggers: Vec<TriggerSpec>,
 }
 
 impl Plan {
@@ -149,7 +149,7 @@ impl Plan {
     }
 }
 
-/// Consigne résolue, positions en pct.
+/// Resolved trigger, positions in pct.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trigger {
     pub id: String,
@@ -160,11 +160,11 @@ pub struct Trigger {
     pub repeat: Repeat,
     pub condition: Option<Condition>,
     pub expire_after_laps: Option<u32>,
-    /// Retard maximal toléré, en pct de tour.
+    /// Maximum tolerated delay, in fraction of a lap.
     pub max_delay_pct: f64,
 }
 
-/// Zone où le coach se tait, en pct (`start > end` : chevauche la ligne).
+/// Zone where the coach stays silent, in pct (`start > end`: crosses the line).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QuietZone {
     pub start: f64,
@@ -186,7 +186,7 @@ const DEFAULT_OFFSET_M: f64 = -150.0;
 const DEFAULT_QUIET_LEAD_M: f64 = 30.0;
 const DEFAULT_MAX_DELAY_M: f64 = 150.0;
 
-/// Carte nécessaire à la résolution : la piste et les métriques de la référence.
+/// Map needed to resolve a plan: the track and the reference metrics.
 pub struct TrackContext<'a> {
     pub model: &'a TrackModel,
     pub reference: &'a [CornerMetrics],
@@ -208,18 +208,18 @@ impl<'a> TrackContext<'a> {
         let c = &self.model.corners[i];
         let m = self.reference.get(i);
         match anchor {
-            Anchor::Freinage => m.and_then(|m| m.brake_point_pct).unwrap_or(c.start_pct),
-            Anchor::Entree => c.start_pct,
+            Anchor::Braking => m.and_then(|m| m.brake_point_pct).unwrap_or(c.start_pct),
+            Anchor::Entry => c.start_pct,
             Anchor::Apex => m.map(|m| m.min_speed_pct).unwrap_or(c.apex_pct),
-            Anchor::Sortie => c.end_pct,
+            Anchor::Exit => c.end_pct,
         }
     }
 
-    /// Zones de silence : de `marge` avant le freinage jusqu'à l'apex (par défaut),
-    /// pour chaque virage où la référence freine.
+    /// Quiet zones: from `quiet_lead_m` before the braking point to the apex (by
+    /// default), for every corner where the reference brakes.
     pub fn quiet_zones(&self, settings: &PlanSettings) -> Vec<QuietZone> {
-        let lead = settings.marge_silence_m.unwrap_or(DEFAULT_QUIET_LEAD_M) / self.model.length_m;
-        let until = settings.silence_jusqu_a.unwrap_or_default();
+        let lead = settings.quiet_lead_m.unwrap_or(DEFAULT_QUIET_LEAD_M) / self.model.length_m;
+        let until = settings.quiet_until.unwrap_or_default();
         self.model
             .corners
             .iter()
@@ -228,9 +228,9 @@ impl<'a> TrackContext<'a> {
                 let m = self.reference.get(i)?;
                 let brake = m.brake_point_pct?;
                 let end = match until {
-                    QuietUntil::Relachement => m.brake_release_pct.unwrap_or(m.min_speed_pct),
+                    QuietUntil::BrakeRelease => m.brake_release_pct.unwrap_or(m.min_speed_pct),
                     QuietUntil::Apex => m.min_speed_pct,
-                    QuietUntil::Sortie => c.end_pct,
+                    QuietUntil::Exit => c.end_pct,
                 };
                 Some(QuietZone {
                     start: wrap(brake - lead),
@@ -241,56 +241,56 @@ impl<'a> TrackContext<'a> {
     }
 }
 
-/// Résout les consignes du plan. Sans carte de piste, seules les consignes à
-/// position absolue sont acceptées.
+/// Resolves the plan triggers. Without a track map, only triggers with an
+/// absolute position are accepted.
 pub fn resolve(plan: &Plan, track: Option<&TrackContext>) -> Result<Vec<Trigger>, PlanError> {
     let length = track.map(|t| t.model.length_m);
-    plan.consignes
+    plan.triggers
         .iter()
         .enumerate()
         .map(|(n, spec)| {
-            let id = spec.id.clone().unwrap_or_else(|| format!("c{}", n + 1));
+            let id = spec.id.clone().unwrap_or_else(|| format!("t{}", n + 1));
             let invalid = |msg: String| PlanError::Invalid {
                 id: id.clone(),
                 msg,
             };
-            if spec.texte.trim().is_empty() {
-                return Err(invalid("texte vide".into()));
+            if spec.text.trim().is_empty() {
+                return Err(invalid("empty text".into()));
             }
-            let (at_pct, corner) = match (spec.position, &spec.virage) {
+            let (at_pct, corner) = match (spec.position, &spec.corner) {
                 (Some(p), _) => {
                     if !(0.0..1.0).contains(&p) {
-                        return Err(invalid(format!("position {p} hors de [0, 1)")));
+                        return Err(invalid(format!("position {p} outside [0, 1)")));
                     }
-                    (p, spec.virage.clone())
+                    (p, spec.corner.clone())
                 }
                 (None, Some(label)) => {
                     let t = track.ok_or_else(|| {
-                        invalid("virage indiqué mais aucune référence chargée".into())
+                        invalid("corner given but no reference lap loaded".into())
                     })?;
                     let i = t
                         .corner_index(label)
-                        .ok_or_else(|| invalid(format!("virage inconnu : {label}")))?;
-                    let base = t.anchor_pct(i, spec.ancre.unwrap_or_default());
-                    let offset = spec.decalage_m.unwrap_or(DEFAULT_OFFSET_M) / t.model.length_m;
+                        .ok_or_else(|| invalid(format!("unknown corner: {label}")))?;
+                    let base = t.anchor_pct(i, spec.anchor.unwrap_or_default());
+                    let offset = spec.offset_m.unwrap_or(DEFAULT_OFFSET_M) / t.model.length_m;
                     (wrap(base + offset), Some(t.model.corners[i].label()))
                 }
-                (None, None) => return Err(invalid("ni « virage » ni « position »".into())),
+                (None, None) => return Err(invalid("neither \"corner\" nor \"position\"".into())),
             };
             let max_delay_m = spec
-                .retard_max_m
-                .or(plan.reglages.retard_max_m)
+                .max_delay_m
+                .or(plan.settings.max_delay_m)
                 .unwrap_or(DEFAULT_MAX_DELAY_M);
             Ok(Trigger {
                 id: id.clone(),
-                text: spec.texte.trim().to_string(),
+                text: spec.text.trim().to_string(),
                 at_pct,
                 corner,
-                priority: spec.priorite.unwrap_or(5).min(9),
-                repeat: spec.repetition.unwrap_or_default(),
+                priority: spec.priority.unwrap_or(5).min(9),
+                repeat: spec.repeat.unwrap_or_default(),
                 condition: spec.condition,
-                expire_after_laps: spec.expire_apres_tours,
-                // Sans longueur de piste connue : 3 % du tour.
+                expire_after_laps: spec.expire_after_laps,
+                // Unknown track length: 3 % of a lap.
                 max_delay_pct: length.map(|l| max_delay_m / l).unwrap_or(0.03),
             })
         })
@@ -328,44 +328,44 @@ mod tests {
     fn parses_full_plan() {
         let plan = Plan::parse(
             r#"
-            [reglages]
-            marge_silence_m = 40
-            silence_jusqu_a = "sortie"
+            [settings]
+            quiet_lead_m = 40
+            quiet_until = "exit"
 
-            [[consigne]]
+            [[trigger]]
             id = "t4"
-            virage = "T4"
-            ancre = "apex"
-            decalage_m = -300
-            texte = "  Épingle.  "
-            priorite = 12
-            repetition = { tours = 3 }
-            condition = { delta_au_dessus = 0.2 }
-            expire_apres_tours = 5
+            corner = "T4"
+            anchor = "apex"
+            offset_m = -300
+            text = "  Hairpin.  "
+            priority = 12
+            repeat = { laps = 3 }
+            condition = { delta_above = 0.2 }
+            expire_after_laps = 5
 
-            [[consigne]]
+            [[trigger]]
             position = 0.5
-            texte = "Mi-tour."
-            repetition = "une_fois"
+            text = "Half lap."
+            repeat = "once"
             "#,
         )
         .unwrap();
-        assert_eq!(plan.consignes.len(), 2);
-        assert_eq!(plan.reglages.silence_jusqu_a, Some(QuietUntil::Sortie));
+        assert_eq!(plan.triggers.len(), 2);
+        assert_eq!(plan.settings.quiet_until, Some(QuietUntil::Exit));
         let a = analyzer();
         let ctx = TrackContext {
             model: &a.model,
             reference: &a.reference_metrics,
         };
         let t = resolve(&plan, Some(&ctx)).unwrap();
-        assert_eq!(t[0].text, "Épingle.");
-        assert_eq!(t[0].priority, 9, "priorité bornée à 9");
-        assert_eq!(t[0].repeat, Repeat::Tours(3));
-        assert_eq!(t[0].condition, Some(Condition::DeltaAuDessus(0.2)));
+        assert_eq!(t[0].text, "Hairpin.");
+        assert_eq!(t[0].priority, 9, "priority capped at 9");
+        assert_eq!(t[0].repeat, Repeat::Laps(3));
+        assert_eq!(t[0].condition, Some(Condition::DeltaAbove(0.2)));
         let apex = a.reference_metrics[3].min_speed_pct;
         let expected = apex - 300.0 / a.model.length_m;
         assert!((t[0].at_pct - expected).abs() < 1e-9);
-        assert_eq!(t[1].id, "c2");
+        assert_eq!(t[1].id, "t2");
         assert_eq!(t[1].at_pct, 0.5);
     }
 
@@ -376,8 +376,7 @@ mod tests {
             model: &a.model,
             reference: &a.reference_metrics,
         };
-        let plan =
-            Plan::parse("[[consigne]]\nvirage = \"t1\"\ndecalage_m = 0\ntexte = \"x\"").unwrap();
+        let plan = Plan::parse("[[trigger]]\ncorner = \"t1\"\noffset_m = 0\ntext = \"x\"").unwrap();
         let t = resolve(&plan, Some(&ctx)).unwrap();
         assert_eq!(Some(t[0].at_pct), a.reference_metrics[0].brake_point_pct);
         assert_eq!(t[0].corner.as_deref(), Some("T1"));
@@ -392,17 +391,17 @@ mod tests {
         };
         for (src, needle) in [
             (
-                "[[consigne]]\nvirage = \"T42\"\ntexte = \"x\"",
-                "virage inconnu",
+                "[[trigger]]\ncorner = \"T42\"\ntext = \"x\"",
+                "unknown corner",
             ),
-            ("[[consigne]]\ntexte = \"x\"", "ni « virage »"),
-            ("[[consigne]]\nposition = 1.5\ntexte = \"x\"", "hors de"),
-            ("[[consigne]]\nposition = 0.1\ntexte = \" \"", "texte vide"),
+            ("[[trigger]]\ntext = \"x\"", "neither \"corner\""),
+            ("[[trigger]]\nposition = 1.5\ntext = \"x\"", "outside"),
+            ("[[trigger]]\nposition = 0.1\ntext = \" \"", "empty text"),
         ] {
             let err = resolve(&Plan::parse(src).unwrap(), Some(&ctx)).unwrap_err();
             assert!(err.to_string().contains(needle), "{err}");
         }
-        assert!(Plan::parse("[[consigne]]\nposition = \"a\"").is_err());
+        assert!(Plan::parse("[[trigger]]\nposition = \"a\"").is_err());
     }
 
     #[test]

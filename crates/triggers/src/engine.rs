@@ -151,7 +151,7 @@ impl TriggerEngine {
     /// Ajoute une consigne ponctuelle (dite une seule fois). `arm_now` : armée
     /// tout de suite à la position courante, sinon au passage de `at_pct`.
     pub fn inject(&mut self, mut trigger: Trigger, arm_now: bool) {
-        trigger.repeat = Repeat::UneFois;
+        trigger.repeat = Repeat::Once;
         self.slots.push(Slot {
             trigger,
             times_spoken: 0,
@@ -209,9 +209,9 @@ impl TriggerEngine {
             return false;
         }
         match slot.trigger.repeat {
-            Repeat::UneFois => slot.times_spoken == 0,
-            Repeat::ChaqueTour => slot.last_spoken_lap != Some(lap),
-            Repeat::Tours(n) => slot.times_spoken < n && slot.last_spoken_lap != Some(lap),
+            Repeat::Once => slot.times_spoken == 0,
+            Repeat::EveryLap => slot.last_spoken_lap != Some(lap),
+            Repeat::Laps(n) => slot.times_spoken < n && slot.last_spoken_lap != Some(lap),
         }
     }
 
@@ -328,8 +328,8 @@ impl TriggerEngine {
                 let slot = &mut self.slots[slot_idx];
                 slot.times_spoken += 1;
                 slot.last_spoken_lap = Some(s.lap);
-                if slot.trigger.repeat == Repeat::UneFois
-                    || matches!(slot.trigger.repeat, Repeat::Tours(n) if slot.times_spoken >= n)
+                if slot.trigger.repeat == Repeat::Once
+                    || matches!(slot.trigger.repeat, Repeat::Laps(n) if slot.times_spoken >= n)
                 {
                     slot.expired = true;
                 }
@@ -358,7 +358,7 @@ mod tests {
             at_pct: at,
             corner: None,
             priority,
-            repeat: Repeat::ChaqueTour,
+            repeat: Repeat::EveryLap,
             condition: None,
             expire_after_laps: None,
             max_delay_pct: 0.05,
@@ -447,9 +447,9 @@ mod tests {
     #[test]
     fn once_and_limited_repeats() {
         let mut once = trig("once", 0.2, 5);
-        once.repeat = Repeat::UneFois;
+        once.repeat = Repeat::Once;
         let mut twice = trig("twice", 0.6, 5);
-        twice.repeat = Repeat::Tours(2);
+        twice.repeat = Repeat::Laps(2);
         let mut sim = Sim::new(TriggerEngine::new(vec![once, twice], vec![]));
         sim.run(4, 1.0, &[]);
         let ids: Vec<String> = sim.said().into_iter().map(|x| x.2).collect();
@@ -547,9 +547,9 @@ mod tests {
     #[test]
     fn condition_gates_arming() {
         let mut t = trig("a", 0.5, 5);
-        t.condition = Some(Condition::DeltaAuDessus(1.0)); // delta simulé : 0,3 s
+        t.condition = Some(Condition::DeltaAbove(1.0)); // delta simulé : 0,3 s
         let mut u = trig("b", 0.6, 5);
-        u.condition = Some(Condition::DeltaAuDessus(0.2));
+        u.condition = Some(Condition::DeltaAbove(0.2));
         let mut sim = Sim::new(TriggerEngine::new(vec![t, u], vec![]));
         sim.run(1, 1.0, &[]);
         let ids: Vec<String> = sim.said().into_iter().map(|x| x.2).collect();
@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn carried_state_keeps_once_triggers_silent() {
         let mut once = trig("once", 0.2, 5);
-        once.repeat = Repeat::UneFois;
+        once.repeat = Repeat::Once;
         let mut sim = Sim::new(TriggerEngine::new(vec![once.clone()], vec![]));
         sim.run(1, 1.0, &[]);
         assert_eq!(sim.said().len(), 1);

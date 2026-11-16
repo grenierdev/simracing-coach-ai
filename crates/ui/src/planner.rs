@@ -1,12 +1,11 @@
-//! Planification automatique du tour suivant par la session d'analyse.
+//! Automatic planning of the next lap by the analysis session.
 //!
-//! À chaque tour complet et valide, le bilan (vue d'ensemble de la session et
-//! consignes actives du coach) part à une session ACP distincte de la
-//! conversation, avec un modèle plus fort. Claude analyse les virages
-//! coûteux avec les outils MCP, puis remplace la couche de consignes du coach
-//! (`update_plan`). Le plan du pilote n'est jamais modifié. L'analyse ne
-//! bloque ni la boucle rapide ni la conversation ; un tour terminé pendant
-//! une analyse est ignoré.
+//! After every complete, valid lap, the debrief (session overview and active
+//! coach triggers) goes to an ACP session separate from the conversation, with
+//! a stronger model. Claude digs into the costly corners with the MCP tools,
+//! then replaces the coach trigger layer (`update_plan`). The driver's own plan
+//! is never modified. The analysis blocks neither the fast loop nor the
+//! conversation; a lap completed during an analysis is skipped.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,7 +18,7 @@ use triggers::{Plan, TriggerRuntime};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PlannerPolicy {
-    /// Une analyse tous les N tours valides.
+    /// One analysis every N valid laps.
     pub every_n_laps: u32,
 }
 
@@ -29,8 +28,8 @@ impl Default for PlannerPolicy {
     }
 }
 
-/// Faut-il analyser ce tour ? `valid_since_last` : tours valides depuis la
-/// dernière analyse, celui-ci compris.
+/// Should this lap be analyzed? `valid_since_last`: valid laps since the last
+/// analysis, this one included.
 pub fn should_analyze(
     lap: &Lap,
     valid_since_last: u32,
@@ -45,33 +44,33 @@ fn lap_time(secs: f64) -> String {
     format!("{}:{:02}.{:03}", ms / 60_000, (ms / 1000) % 60, ms % 1000)
 }
 
-/// Message envoyé à la session d'analyse.
+/// Message sent to the analysis session.
 pub fn analysis_prompt(
     lap: &Lap,
     overview: &serde_json::Value,
     coach_plan: Option<&Plan>,
 ) -> String {
     let active = match coach_plan {
-        Some(p) if !p.consignes.is_empty() => p
-            .consignes
+        Some(p) if !p.triggers.is_empty() => p
+            .triggers
             .iter()
             .map(|c| {
                 format!(
-                    "{} ({}) : « {} »",
+                    "{} ({}): \"{}\"",
                     c.id.as_deref().unwrap_or("?"),
-                    c.virage.as_deref().unwrap_or("position"),
-                    c.texte
+                    c.corner.as_deref().unwrap_or("position"),
+                    c.text
                 )
             })
             .collect::<Vec<_>>()
-            .join(" ; "),
-        _ => "aucune".into(),
+            .join("; "),
+        _ => "none".into(),
     };
     format!(
-        "[Analyse] Tour {} terminé en {}.\n\
-         Vue d'ensemble (get_session_overview) : {}\n\
-         Consignes du coach actives : {}\n\
-         Prépare les consignes du tour suivant (update_plan, mode remplacer, au plus trois), puis résume en une phrase.",
+        "[Analysis] Lap {} completed in {}.\n\
+         Overview (get_session_overview): {}\n\
+         Active coach triggers: {}\n\
+         Prepare the triggers for the next lap (update_plan, mode replace, at most three), then summarize in one sentence.",
         lap.number,
         lap_time(lap.lap_time),
         overview,
@@ -83,9 +82,9 @@ pub fn analysis_prompt(
 pub struct PlannerStatus {
     pub enabled: bool,
     pub model: String,
-    /// Tour en cours d'analyse.
+    /// Lap being analyzed.
     pub running: Option<i32>,
-    /// Dernière analyse : tour, résumé, durée (s).
+    /// Last analysis: lap, summary, duration (s).
     pub last: Option<(i32, String, f64)>,
     pub analyses: u32,
     pub error: Option<String>,
@@ -119,7 +118,7 @@ impl Planner {
             std::thread::Builder::new()
                 .name("planner".into())
                 .spawn(move || run(agent, laps, snapshot, triggers, policy, status, flag))
-                .expect("démarrage du planificateur");
+                .expect("starting the planner");
         }
         Planner {
             status,
@@ -163,7 +162,7 @@ fn run(
                         continue;
                     }
                     let Some(analyzer) = triggers.analyzer() else {
-                        status.lock().unwrap().error = Some("pas de tour de référence".into());
+                        status.lock().unwrap().error = Some("no reference lap".into());
                         continue;
                     };
                     let overview = mcp::tools::session_overview(&snapshot(), Some(&analyzer));
@@ -192,7 +191,7 @@ fn run(
                             current = Some((t, lap, started, summary));
                             continue;
                         }
-                        // Le résumé est la dernière phrase de la réponse.
+                        // The summary is the last line of the reply.
                         let summary = summary
                             .trim()
                             .rsplit('\n')
@@ -246,22 +245,22 @@ mod tests {
         assert!(should_analyze(&lap(true), 2, false, &p));
         assert!(
             !should_analyze(&lap(true), 2, true, &p),
-            "analyse déjà en cours"
+            "analysis already running"
         );
-        assert!(!should_analyze(&lap(false), 3, false, &p), "tour invalide");
+        assert!(!should_analyze(&lap(false), 3, false, &p), "invalid lap");
     }
 
     #[test]
     fn prompt_lists_overview_and_active_consignes() {
         let plan =
-            Plan::parse("[[consigne]]\nid = \"auto-T4\"\nvirage = \"T4\"\ntexte = \"Patience.\"")
+            Plan::parse("[[trigger]]\nid = \"auto-T4\"\ncorner = \"T4\"\ntext = \"Patience.\"")
                 .unwrap();
         let p = analysis_prompt(&lap(true), &serde_json::json!({"x": 1}), Some(&plan));
-        assert!(p.starts_with("[Analyse] Tour 4 terminé en 1:23.456."));
+        assert!(p.starts_with("[Analysis] Lap 4 completed in 1:23.456."));
         assert!(p.contains("{\"x\":1}"));
-        assert!(p.contains("auto-T4 (T4) : « Patience. »"));
+        assert!(p.contains("auto-T4 (T4): \"Patience.\""));
         assert!(
-            analysis_prompt(&lap(true), &serde_json::json!({}), None).contains("actives : aucune")
+            analysis_prompt(&lap(true), &serde_json::json!({}), None).contains("triggers: none")
         );
     }
 }

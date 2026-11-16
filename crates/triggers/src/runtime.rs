@@ -187,7 +187,7 @@ fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(Trigge
     };
     if let Some(coach) = &shared.coach_plan {
         let mut coach = coach.clone();
-        coach.reglages = plan.reglages.clone();
+        coach.settings = plan.settings.clone();
         match resolve(&coach, ctx.as_ref()) {
             Ok(t) => {
                 shared.status.coach_error = None;
@@ -201,7 +201,7 @@ fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(Trigge
     }
     let quiet = ctx
         .as_ref()
-        .map(|c| c.quiet_zones(&plan.reglages))
+        .map(|c| c.quiet_zones(&plan.settings))
         .unwrap_or_default();
     let texts: Vec<String> = triggers.iter().map(|t| t.text.clone()).collect();
     speech.prepare(&texts);
@@ -231,7 +231,7 @@ fn injected_trigger(
         at_pct: f64::NAN,
         corner: None,
         priority,
-        repeat: crate::plan::Repeat::UneFois,
+        repeat: crate::plan::Repeat::Once,
         condition: None,
         expire_after_laps: None,
         max_delay_pct,
@@ -241,10 +241,10 @@ fn injected_trigger(
         SayWhen::NextStraight => Ok((base(6, 0.6), true)),
         SayWhen::At(spec) => {
             let mut spec = (**spec).clone();
-            spec.texte = text.to_string();
+            spec.text = text.to_string();
             spec.id = Some(id.clone());
             let plan = Plan {
-                consignes: vec![spec],
+                triggers: vec![spec],
                 ..Default::default()
             };
             let ctx = analyzer.map(|a| TrackContext {
@@ -402,15 +402,15 @@ mod tests {
         ));
         let plan = Plan::parse(
             r#"
-            [[consigne]]
-            virage = "T4"
-            texte = "Épingle, freine fort."
-            decalage_m = -200
+            [[trigger]]
+            corner = "T4"
+            text = "Épingle, freine fort."
+            offset_m = -200
 
-            [[consigne]]
+            [[trigger]]
             position = 0.05
-            texte = "Nouveau tour."
-            repetition = "une_fois"
+            text = "Nouveau tour."
+            repeat = "once"
             "#,
         )
         .unwrap();
@@ -495,10 +495,10 @@ mod tests {
         rt.set_reference(Some(analyzer));
         rt.set_plan(
             "pilote",
-            Plan::parse("[[consigne]]\nid = \"a\"\nposition = 0.1\ntexte = \"Pilote.\"").unwrap(),
+            Plan::parse("[[trigger]]\nid = \"a\"\nposition = 0.1\ntext = \"Pilote.\"").unwrap(),
         );
         rt.set_coach_plan(
-            Plan::parse("[[consigne]]\nid = \"t4\"\nvirage = \"T4\"\ntexte = \"Coach.\"").unwrap(),
+            Plan::parse("[[trigger]]\nid = \"t4\"\ncorner = \"T4\"\ntext = \"Coach.\"").unwrap(),
         );
         std::thread::sleep(Duration::from_millis(300));
         let ids: Vec<String> = rt
@@ -509,13 +509,13 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["a", "coach:t4"]);
         assert_eq!(
-            rt.current_plan().unwrap().1.consignes.len(),
+            rt.current_plan().unwrap().1.triggers.len(),
             1,
             "plan du pilote intact"
         );
 
         // Plan du coach invalide (virage inconnu) : le plan du pilote reste actif.
-        rt.set_coach_plan(Plan::parse("[[consigne]]\nvirage = \"T99\"\ntexte = \"x\"").unwrap());
+        rt.set_coach_plan(Plan::parse("[[trigger]]\ncorner = \"T99\"\ntext = \"x\"").unwrap());
         std::thread::sleep(Duration::from_millis(300));
         let st = rt.status();
         assert!(st.coach_error.is_some());
@@ -528,10 +528,10 @@ mod tests {
         let rt = TriggerRuntime::spawn(rx, Box::new(FakeSpeech::default()));
         rt.set_plan(
             "p",
-            Plan::parse("[[consigne]]\nvirage = \"T1\"\ntexte = \"x\"").unwrap(),
+            Plan::parse("[[trigger]]\ncorner = \"T1\"\ntext = \"x\"").unwrap(),
         );
         std::thread::sleep(Duration::from_millis(300));
         let st = rt.status();
-        assert!(st.plan_error.unwrap().contains("aucune référence"));
+        assert!(st.plan_error.unwrap().contains("no reference lap"));
     }
 }

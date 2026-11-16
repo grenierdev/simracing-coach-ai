@@ -168,8 +168,8 @@ pub fn pilot_context(
             .min_by(|x, y| fwd(p, x.start_pct).total_cmp(&fwd(p, y.start_pct)))
             .map(|c| c.label());
         if let Some(c) = a.model.corners.iter().find(|c| c.contains(p)) {
-            // En plein virage : c'est le virage en cours qu'on annonce.
-            next_corner = Some(format!("{} (en cours)", c.label()));
+            // Inside a corner: announce the current one.
+            next_corner = Some(format!("{} (current)", c.label()));
         }
     }
     let live_delta = match (

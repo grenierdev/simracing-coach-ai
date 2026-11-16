@@ -104,10 +104,10 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
                     );
                     let client = ().serve(transport).await.unwrap();
                     let args = serde_json::json!({
-                        "mode": "remplacer",
-                        "consignes": [{
-                            "id": "auto-T6", "virage": "T6", "ancre": "freinage", "decalage_m": -300,
-                            "texte": "Dernier virage, freine plus tard.", "priorite": 6, "expire_apres_tours": 2
+                        "mode": "replace",
+                        "triggers": [{
+                            "id": "auto-T6", "corner": "T6", "anchor": "braking", "offset_m": -300,
+                            "text": "Dernier virage, freine plus tard.", "priority": 6, "expire_after_laps": 2
                         }]
                     });
                     let res = client
@@ -147,7 +147,7 @@ fn completed_lap_triggers_analysis_and_coach_plan() {
     triggers.set_reference(Some(analyzer));
     triggers.set_plan(
         "pilote",
-        Plan::parse("[[consigne]]\nid = \"a\"\nposition = 0.1\ntexte = \"Pilote.\"").unwrap(),
+        Plan::parse("[[trigger]]\nid = \"a\"\nposition = 0.1\ntext = \"Pilote.\"").unwrap(),
     );
 
     let done = lap(track.simulate_lap(0.95, 100.0, 0.0), 3);
@@ -210,11 +210,8 @@ fn completed_lap_triggers_analysis_and_coach_plan() {
     assert_eq!(summary, "T6 : freinage trop tôt, consigne ajoutée.");
 
     let p = prompts.lock().unwrap()[0].clone();
-    assert!(p.starts_with("[Analyse] Tour 3 terminé en"), "{p}");
-    assert!(
-        p.contains("temps_perdu_par_virage"),
-        "vue d'ensemble jointe"
-    );
+    assert!(p.starts_with("[Analysis] Lap 3 completed in"), "{p}");
+    assert!(p.contains("time_lost_by_corner"), "vue d'ensemble jointe");
 
     std::thread::sleep(Duration::from_millis(300));
     let ids: Vec<String> = triggers
@@ -225,7 +222,7 @@ fn completed_lap_triggers_analysis_and_coach_plan() {
         .collect();
     assert_eq!(ids, vec!["a", "coach:auto-T6"]);
     assert_eq!(
-        triggers.current_plan().unwrap().1.consignes.len(),
+        triggers.current_plan().unwrap().1.triggers.len(),
         1,
         "plan du pilote intact"
     );

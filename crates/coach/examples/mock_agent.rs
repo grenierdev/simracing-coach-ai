@@ -53,22 +53,22 @@ async fn plan_next_lap(url: String, token: String) -> String {
         Ok(v) => v,
         Err(e) => return format!("Télémétrie indisponible : {e}"),
     };
-    let Some(worst) = v["temps_perdu_par_virage"].get(0) else {
+    let Some(worst) = v["time_lost_by_corner"].get(0) else {
         return "Pas encore de tour à analyser.".into();
     };
-    let corner = worst["virage"].as_str().unwrap_or("T1").to_string();
+    let corner = worst["corner"].as_str().unwrap_or("T1").to_string();
     let args = serde_json::json!({
-        "mode": "remplacer",
-        "consignes": [{
-            "id": format!("auto-{corner}"), "virage": corner, "ancre": "freinage",
-            "decalage_m": -300, "priorite": 6, "expire_apres_tours": 2,
-            "texte": format!("{corner}, garde de la vitesse au point de corde.")
+        "mode": "replace",
+        "triggers": [{
+            "id": format!("auto-{corner}"), "corner": corner, "anchor": "braking",
+            "offset_m": -300, "priority": 6, "expire_after_laps": 2,
+            "text": format!("{corner}, garde de la vitesse au point de corde.")
         }]
     });
     match call(url, token, "update_plan", Some(args)).await {
         Ok(_) => format!(
             "{corner} : {:.0} centièmes perdus, consigne ajoutée.",
-            worst["perte_s"].as_f64().unwrap_or(0.0) * 100.0
+            worst["loss_s"].as_f64().unwrap_or(0.0) * 100.0
         ),
         Err(e) => format!("Plan refusé : {e}"),
     }
@@ -122,7 +122,7 @@ async fn main() -> agent_client_protocol::Result<()> {
             async move |req: PromptRequest, responder: Responder<PromptResponse, V1>, cx: ConnectionTo<Client>| {
                 let endpoint = mcp.lock().unwrap().clone();
                 let sid = req.session_id.clone();
-                let is_analysis = matches!(req.prompt.first(), Some(ContentBlock::Text(t)) if t.text.starts_with("[Analyse]"));
+                let is_analysis = matches!(req.prompt.first(), Some(ContentBlock::Text(t)) if t.text.starts_with("[Analysis]"));
                 tokio::spawn(async move {
                     let send = |u| cx.send_notification(SessionNotification::new(sid.clone(), u));
                     if is_analysis {
@@ -139,11 +139,11 @@ async fn main() -> agent_client_protocol::Result<()> {
                         Some((url, token)) => {
                             let _ = send(SessionUpdate::ToolCall(ToolCall::new("t1", "mcp__coach__get_session_overview")));
                             match overview(url, token).await {
-                                Ok(v) => match v["temps_perdu_par_virage"].get(0) {
+                                Ok(v) => match v["time_lost_by_corner"].get(0) {
                                     Some(w) => format!(
                                         "Le plus coûteux, c'est {} : {:.0} centièmes perdus en moyenne.",
-                                        w["virage"].as_str().unwrap_or("?"),
-                                        w["perte_s"].as_f64().unwrap_or(0.0) * 100.0
+                                        w["corner"].as_str().unwrap_or("?"),
+                                        w["loss_s"].as_f64().unwrap_or(0.0) * 100.0
                                     ),
                                     None => "Pas encore de tour complet à comparer.".into(),
                                 },
