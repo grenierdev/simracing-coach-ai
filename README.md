@@ -15,7 +15,7 @@ Voice pipeline: STT → Claude (via ACP) → TTS. STT and TTS run in-process wit
 | 5. Push-to-talk STT, voice conversation | **done** |
 | 6. Automatic planning of the next lap | **done** |
 
-![Milestone 6: coach cue on T6 prepared by the analysis session (mock agent)](docs/milestone6.png)
+![Synthetic session with the mock agent: corner deltas, cues prepared by the analysis session, conversation](docs/screenshot.png)
 
 The conclusions of the preliminary checks (crates, versions, ACP, MCP, authentication, Garage61, STT/TTS, latency) are in [docs/verifications.md](docs/verifications.md).
 
