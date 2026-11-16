@@ -1,6 +1,6 @@
 [package]
 name = "reference"
-description = "Import du tour de référence : CSV Garage61 et fichiers .ibt"
+description = "Reference lap import: Garage61 CSV and .ibt files"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

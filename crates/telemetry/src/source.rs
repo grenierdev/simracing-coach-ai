@@ -1,4 +1,4 @@
-//! Sources de télémétrie : live (mémoire partagée iRacing) ou rejeu d'un .ibt.
+//! Telemetry sources: live (iRacing shared memory) or replay of an .ibt.
 
 use std::time::{Duration, Instant};
 
@@ -10,14 +10,14 @@ use crate::session::SessionInfo;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceEvent {
-    /// Connexion établie (ou début du rejeu).
+    /// Connection established (or replay started).
     Connected(SessionInfo),
-    /// Le YAML de session a changé (nouvelle session, changement de voiture...).
+    /// The session YAML changed (new session, car change...).
     SessionInfoChanged(SessionInfo),
     Sample(Sample),
-    /// iRacing fermé ou plus de données.
+    /// iRacing closed or no more data.
     Disconnected,
-    /// Fin du fichier de rejeu.
+    /// End of the replay file.
     Ended,
 }
 
@@ -27,17 +27,17 @@ pub enum SourceError {
     Ibt(#[from] crate::ibt::IbtError),
     #[error("{0}")]
     Format(#[from] crate::irsdk::FormatError),
-    #[error("source live indisponible : {0}")]
+    #[error("live source unavailable: {0}")]
     Unavailable(String),
 }
 
 pub trait TelemetrySource: Send {
-    /// Attend au plus `timeout` le prochain événement. `Ok(None)` : rien de neuf.
+    /// Waits at most `timeout` for the next event. `Ok(None)`: nothing new.
     fn next_event(&mut self, timeout: Duration) -> Result<Option<SourceEvent>, SourceError>;
     fn describe(&self) -> String;
 }
 
-/// Rejoue un .ibt comme s'il était live, au rythme `tickRate × speed`.
+/// Replays an .ibt as if it were live, at the rate `tickRate × speed`.
 pub struct ReplaySource {
     file: IbtFile,
     label: String,
@@ -50,7 +50,7 @@ pub struct ReplaySource {
 }
 
 impl ReplaySource {
-    /// `speed` : 1.0 = temps réel ; `f64::INFINITY` = aussi vite que possible.
+    /// `speed`: 1.0 = real time; `f64::INFINITY` = as fast as possible.
     pub fn new(file: IbtFile, label: impl Into<String>, speed: f64, looping: bool) -> Self {
         ReplaySource {
             file,
@@ -83,8 +83,8 @@ impl TelemetrySource for ReplaySource {
             if self.looping && !self.file.is_empty() {
                 self.index = 0;
                 self.started = None;
-                // Un nouveau passage est une nouvelle « connexion » : l'historique
-                // de tours n'a pas de sens à travers la boucle.
+                // A new pass is a new "connection": the lap history makes no
+                // sense across the loop.
                 return Ok(Some(SourceEvent::Connected(self.file.session.clone())));
             }
             self.ended = true;
@@ -111,9 +111,9 @@ impl TelemetrySource for ReplaySource {
 
     fn describe(&self) -> String {
         if self.speed.is_finite() && self.speed != 1.0 {
-            format!("rejeu {} (×{})", self.label, self.speed)
+            format!("replay {} (×{})", self.label, self.speed)
         } else {
-            format!("rejeu {}", self.label)
+            format!("replay {}", self.label)
         }
     }
 }

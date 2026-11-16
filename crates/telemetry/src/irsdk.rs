@@ -1,35 +1,35 @@
-//! Format binaire du SDK iRacing, commun à la mémoire partagée et aux fichiers .ibt.
+//! iRacing SDK binary format, shared by shared memory and .ibt files.
 //!
-//! Référence : `irsdk_defines.h` du SDK officiel (structures `irsdk_header`,
-//! `irsdk_diskSubHeader`, `irsdk_varHeader`, `irsdk_varBuf`). Toutes les valeurs
-//! sont little-endian, alignement sur 4 octets.
+//! Reference: `irsdk_defines.h` from the official SDK (structures `irsdk_header`,
+//! `irsdk_diskSubHeader`, `irsdk_varHeader`, `irsdk_varBuf`). All values are
+//! little-endian, 4-byte aligned.
 //!
 //! ```text
-//! irsdk_header (112 octets)
+//! irsdk_header (112 bytes)
 //!   0  ver                 i32
-//!   4  status              i32   bit 0 = connecté
-//!   8  tickRate            i32   60 en général
-//!  12  sessionInfoUpdate   i32   incrémenté à chaque changement du YAML
+//!   4  status              i32   bit 0 = connected
+//!   8  tickRate            i32   usually 60
+//!  12  sessionInfoUpdate   i32   incremented on every YAML change
 //!  16  sessionInfoLen      i32
 //!  20  sessionInfoOffset   i32
 //!  24  numVars             i32
 //!  28  varHeaderOffset     i32
 //!  32  numBuf              i32   <= 4
-//!  36  bufLen              i32   taille d'une ligne de données
+//!  36  bufLen              i32   size of a data row
 //!  40  pad[2]              i32
-//!  48  varBuf[4]           { tickCount i32, bufOffset i32, pad[2] i32 } = 16 octets chacun
+//!  48  varBuf[4]           { tickCount i32, bufOffset i32, pad[2] i32 } = 16 bytes each
 //!
-//! irsdk_diskSubHeader (.ibt uniquement, juste après le header, 32 octets)
+//! irsdk_diskSubHeader (.ibt only, right after the header, 32 bytes)
 //! 112  sessionStartDate    i64 (time_t)
 //! 120  sessionStartTime    f64
 //! 128  sessionEndTime      f64
 //! 136  sessionLapCount     i32
 //! 140  sessionRecordCount  i32
 //!
-//! irsdk_varHeader (144 octets)
+//! irsdk_varHeader (144 bytes)
 //!   0  type        i32
-//!   4  offset      i32   décalage dans la ligne de données
-//!   8  count       i32   nombre d'éléments (tableaux)
+//!   4  offset      i32   offset in the data row
+//!   8  count       i32   number of elements (arrays)
 //!  12  countAsTime u8 + pad[3]
 //!  16  name[32]
 //!  48  desc[64]
@@ -48,9 +48,9 @@ pub const STATUS_CONNECTED: i32 = 1;
 
 #[derive(Debug, Error)]
 pub enum FormatError {
-    #[error("données tronquées : {0}")]
+    #[error("truncated data: {0}")]
     Truncated(&'static str),
-    #[error("en-tête invalide : {0}")]
+    #[error("invalid header: {0}")]
     Invalid(String),
 }
 
@@ -72,13 +72,13 @@ fn read_f64(b: &[u8], off: usize) -> Result<f64, FormatError> {
         .ok_or(FormatError::Truncated("f64"))
 }
 
-/// Chaîne C de taille fixe, encodée en ISO-8859-1 par iRacing.
+/// Fixed-size C string, encoded as ISO-8859-1 by iRacing.
 fn read_cstr(b: &[u8]) -> String {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     latin1_to_string(&b[..end])
 }
 
-/// iRacing écrit le YAML et les noms en ISO-8859-1 (Windows-1252 en pratique).
+/// iRacing writes the YAML and names as ISO-8859-1 (Windows-1252 in practice).
 pub fn latin1_to_string(b: &[u8]) -> String {
     b.iter().map(|&c| c as char).collect()
 }
@@ -144,7 +144,7 @@ impl Header {
         self.status & STATUS_CONNECTED != 0
     }
 
-    /// Tampon le plus récent (tickCount le plus élevé) parmi les `numBuf` tampons rotatifs.
+    /// Most recent buffer (highest tickCount) among the `numBuf` rotating buffers.
     pub fn latest_buf(&self) -> VarBuf {
         self.var_buf[..self.num_buf.max(1) as usize]
             .iter()
@@ -266,11 +266,11 @@ impl VarHeader {
         }
         let ty_raw = read_i32(b, 0)?;
         let ty = VarType::from_i32(ty_raw)
-            .ok_or_else(|| FormatError::Invalid(format!("type de variable {ty_raw}")))?;
+            .ok_or_else(|| FormatError::Invalid(format!("variable type {ty_raw}")))?;
         let offset = read_i32(b, 4)?;
         let count = read_i32(b, 8)?;
         if offset < 0 || count < 0 {
-            return Err(FormatError::Invalid("offset ou count négatif".into()));
+            return Err(FormatError::Invalid("negative offset or count".into()));
         }
         Ok(VarHeader {
             ty,
@@ -300,7 +300,7 @@ impl VarHeader {
     }
 }
 
-/// Table des variables, indexée par nom.
+/// Variable table, indexed by name.
 #[derive(Debug, Clone, Default)]
 pub struct VarTable {
     pub vars: Vec<VarHeader>,
@@ -318,7 +318,7 @@ impl VarTable {
             let v = VarHeader::parse(slice)?;
             if v.offset + v.ty.size() * v.count > header.buf_len as usize {
                 return Err(FormatError::Invalid(format!(
-                    "variable {} hors de la ligne de données",
+                    "variable {} outside the data row",
                     v.name
                 )));
             }
@@ -341,7 +341,7 @@ impl VarTable {
     }
 }
 
-/// Lit la valeur scalaire (premier élément) d'une variable, convertie en f64.
+/// Reads the scalar value (first element) of a variable, converted to f64.
 pub fn read_value(row: &[u8], var: &VarHeader) -> Option<f64> {
     let o = var.offset;
     let bytes = row.get(o..o + var.ty.size())?;
@@ -355,7 +355,7 @@ pub fn read_value(row: &[u8], var: &VarHeader) -> Option<f64> {
     })
 }
 
-/// Extrait la chaîne YAML des informations de session.
+/// Extracts the session info YAML string.
 pub fn session_info_yaml(b: &[u8], header: &Header) -> Option<String> {
     let start = header.session_info_offset as usize;
     let len = header.session_info_len as usize;
@@ -364,7 +364,7 @@ pub fn session_info_yaml(b: &[u8], header: &Header) -> Option<String> {
     Some(decode_session_yaml(&raw[..end]))
 }
 
-/// Le YAML est en Windows-1252, sauf s'il déclare `Encoding: UTF8` dans `WeekendInfo`.
+/// The YAML is Windows-1252, unless it declares `Encoding: UTF8` in `WeekendInfo`.
 pub fn decode_session_yaml(raw: &[u8]) -> String {
     let head = &raw[..raw.len().min(200)];
     let utf8 = head.windows(14).any(|w| w == b"Encoding: UTF8");

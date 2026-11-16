@@ -1,8 +1,8 @@
-//! Boucle rapide du coach : un thread consomme les échantillons de la
-//! télémétrie, fait tourner le moteur de consignes et pilote la parole.
+//! Coach fast loop: a thread consumes telemetry samples, runs the trigger
+//! engine and drives speech.
 //!
-//! La référence (carte de la piste) et le plan peuvent changer à tout moment
-//! depuis l'interface ; le moteur est alors reconstruit.
+//! The reference (track map) and the plan can change at any time from the UI;
+//! the engine is then rebuilt.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,15 +17,15 @@ use telemetry::{LapEvent, LapRecorder, Sample};
 use crate::engine::{Command, TickContext, TriggerEngine, TriggerView};
 use crate::plan::{Plan, TrackContext, Trigger, TriggerSpec, resolve};
 
-/// Sortie vocale vue par le moteur. Implémentée par le crate `voice` (via
-/// l'application) ; un faux en test.
+/// Speech output as seen by the engine. Implemented by the `voice` crate (via
+/// the application); a fake in tests.
 pub trait SpeechOutput: Send {
     fn say(&mut self, text: &str);
     fn stop(&mut self);
     fn is_speaking(&self) -> bool;
-    /// Durée de la phrase une fois dite, s (exacte si déjà synthétisée, estimée sinon).
+    /// Duration of the sentence once spoken, s (exact if already synthesized, estimated otherwise).
     fn duration(&mut self, text: &str) -> f64;
-    /// Prépare les phrases à l'avance (synthèse en cache).
+    /// Prepares sentences in advance (cached synthesis).
     fn prepare(&mut self, _texts: &[String]) {}
 }
 
@@ -40,30 +40,30 @@ pub struct LogEntry {
 pub struct RuntimeStatus {
     pub plan_name: Option<String>,
     pub plan_error: Option<String>,
-    /// Erreur de résolution du plan du coach (virage disparu après un changement de référence).
+    /// Coach plan resolution error (corner gone after a reference change).
     pub coach_error: Option<String>,
     pub triggers: Vec<TriggerView>,
-    /// Dernières phrases dites (la plus récente en dernier).
+    /// Last sentences spoken (most recent last).
     pub log: Vec<LogEntry>,
     pub quiet_now: bool,
     pub quiet_zones: usize,
 }
 
-/// Quand dire une phrase injectée.
+/// When to speak an injected sentence.
 #[derive(Debug, Clone)]
 pub enum SayWhen {
-    /// Dès que possible (priorité maximale), en respectant les zones de silence.
+    /// As soon as possible (highest priority), respecting quiet zones.
     Now,
-    /// Sur la prochaine portion où la phrase a le temps d'être dite.
+    /// On the next stretch where the sentence has time to be spoken.
     NextStraight,
-    /// À une position du tour (virage + ancre + décalage, ou position absolue).
+    /// At a position on the lap (corner + anchor + offset, or absolute position).
     At(Box<TriggerSpec>),
 }
 
 struct Shared {
     analyzer: Option<Arc<Analyzer>>,
     plan: Option<(String, Plan)>,
-    /// Couche de consignes gérée par Claude (`update_plan`), distincte du plan du pilote.
+    /// Trigger layer managed by Claude (`update_plan`), separate from the driver's plan.
     coach_plan: Option<Plan>,
     dirty: bool,
     injections: Vec<(String, SayWhen)>,
@@ -95,7 +95,7 @@ impl TriggerRuntime {
             std::thread::Builder::new()
                 .name("coach-fast".into())
                 .spawn(move || run(samples, speech, shared, stop))
-                .expect("démarrage du thread des consignes")
+                .expect("starting the trigger thread")
         };
         TriggerRuntime {
             shared,
@@ -116,12 +116,12 @@ impl TriggerRuntime {
         s.dirty = true;
     }
 
-    /// Plan courant du pilote (nom et contenu).
+    /// Current driver plan (name and content).
     pub fn current_plan(&self) -> Option<(String, Plan)> {
         self.shared.lock().unwrap().plan.clone()
     }
 
-    /// Remplace la couche de consignes du coach ; le plan du pilote n'est pas touché.
+    /// Replaces the coach trigger layer; the driver's plan is left untouched.
     pub fn set_coach_plan(&self, plan: Plan) {
         let mut s = self.shared.lock().unwrap();
         s.coach_plan = Some(plan);
@@ -132,12 +132,12 @@ impl TriggerRuntime {
         self.shared.lock().unwrap().coach_plan.clone()
     }
 
-    /// Carte de la piste courante (référence chargée).
+    /// Current track map (loaded reference).
     pub fn analyzer(&self) -> Option<Arc<Analyzer>> {
         self.shared.lock().unwrap().analyzer.clone()
     }
 
-    /// Programme une phrase ponctuelle.
+    /// Schedules a one-off sentence.
     pub fn say(&self, text: impl Into<String>, when: SayWhen) {
         self.shared
             .lock()
@@ -160,12 +160,12 @@ impl Drop for TriggerRuntime {
     }
 }
 
-/// Préfixe des identifiants des consignes du coach.
+/// Prefix of coach trigger identifiers.
 pub const COACH_PREFIX: &str = "coach:";
 
 fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(TriggerEngine, f64)> {
     shared.dirty = false;
-    // Sans plan, un moteur vide sert quand même aux phrases injectées.
+    // Without a plan, an empty engine still serves injected sentences.
     let empty = (String::new(), Plan::default());
     let (name, plan) = shared.plan.as_ref().unwrap_or(&empty);
     shared.status.plan_name = shared.plan.as_ref().map(|_| name.clone());
@@ -173,8 +173,8 @@ fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(Trigge
         model: &a.model,
         reference: &a.reference_metrics,
     });
-    // Les deux couches sont résolues séparément : une erreur dans l'une ne
-    // fait pas perdre l'autre.
+    // The two layers are resolved separately: an error in one does not lose
+    // the other.
     let mut triggers = match resolve(plan, ctx.as_ref()) {
         Ok(t) => {
             shared.status.plan_error = None;
@@ -216,7 +216,7 @@ fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(Trigge
     Some((engine, length))
 }
 
-/// Consigne ponctuelle correspondant à une phrase injectée.
+/// One-off trigger matching an injected sentence.
 fn injected_trigger(
     text: &str,
     when: &SayWhen,
@@ -288,7 +288,7 @@ fn run(
                             speech.prepare(std::slice::from_ref(&t.text));
                             eng.inject(t, arm_now);
                         }
-                        Err(e) => tracing::warn!("phrase injectée refusée : {e}"),
+                        Err(e) => tracing::warn!("injected sentence rejected: {e}"),
                     }
                 }
                 s.status.triggers = eng.views();
@@ -300,7 +300,7 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         };
         if let Some(LapEvent::Aborted) = laps.push(sample) {
-            // rien : le delta live redevient indisponible
+            // nothing: the live delta becomes unavailable again
         }
         let Some((eng, length)) = engine.as_mut() else {
             continue;
@@ -335,12 +335,12 @@ fn run(
                     });
                 }
                 Command::Stop { reason } => {
-                    tracing::debug!("parole coupée : {reason:?}");
+                    tracing::debug!("speech cut off: {reason:?}");
                     speech.stop();
                 }
             }
         }
-        // Statut publié ~10 fois par seconde ou à chaque commande.
+        // Status published ~10 times per second or on every command.
         ticks += 1;
         if !cmds.is_empty() || ticks.is_multiple_of(6) {
             let mut s = shared.lock().unwrap();
@@ -404,12 +404,12 @@ mod tests {
             r#"
             [[trigger]]
             corner = "T4"
-            text = "Épingle, freine fort."
+            text = "Hairpin, brake hard."
             offset_m = -200
 
             [[trigger]]
             position = 0.05
-            text = "Nouveau tour."
+            text = "New lap."
             repeat = "once"
             "#,
         )
@@ -421,7 +421,7 @@ mod tests {
         rt.set_reference(Some(analyzer));
         rt.set_plan("test", plan);
         std::thread::sleep(Duration::from_millis(250));
-        // Deux tours enchaînés (la référence rejouée), temps continu.
+        // Two consecutive laps (the reference replayed), continuous time.
         let mut t = 0.0;
         for lap in 1..=2 {
             for mut s in track.simulate_lap(0.98, 0.0, 0.0) {
@@ -435,11 +435,7 @@ mod tests {
         let said = fake.said.lock().unwrap().clone();
         assert_eq!(
             said,
-            vec![
-                "Nouveau tour.",
-                "Épingle, freine fort.",
-                "Épingle, freine fort."
-            ]
+            vec!["New lap.", "Hairpin, brake hard.", "Hairpin, brake hard."]
         );
         assert_eq!(fake.prepared.lock().unwrap().len(), 2);
         let status = rt.status();
@@ -454,7 +450,7 @@ mod tests {
         let fake = FakeSpeech::default();
         let rt = TriggerRuntime::spawn(rx, Box::new(fake.clone()));
         std::thread::sleep(Duration::from_millis(150));
-        rt.say("Je regarde le T5.", SayWhen::Now);
+        rt.say("Looking at T5.", SayWhen::Now);
         for i in 0..120 {
             let s = Sample {
                 session_time: i as f64 / 60.0,
@@ -468,7 +464,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(*fake.said.lock().unwrap(), vec!["Je regarde le T5."]);
+        assert_eq!(*fake.said.lock().unwrap(), vec!["Looking at T5."]);
     }
 
     #[test]
@@ -494,8 +490,8 @@ mod tests {
         let rt = TriggerRuntime::spawn(rx, Box::new(FakeSpeech::default()));
         rt.set_reference(Some(analyzer));
         rt.set_plan(
-            "pilote",
-            Plan::parse("[[trigger]]\nid = \"a\"\nposition = 0.1\ntext = \"Pilote.\"").unwrap(),
+            "driver",
+            Plan::parse("[[trigger]]\nid = \"a\"\nposition = 0.1\ntext = \"Driver.\"").unwrap(),
         );
         rt.set_coach_plan(
             Plan::parse("[[trigger]]\nid = \"t4\"\ncorner = \"T4\"\ntext = \"Coach.\"").unwrap(),
@@ -511,10 +507,10 @@ mod tests {
         assert_eq!(
             rt.current_plan().unwrap().1.triggers.len(),
             1,
-            "plan du pilote intact"
+            "driver plan intact"
         );
 
-        // Plan du coach invalide (virage inconnu) : le plan du pilote reste actif.
+        // Invalid coach plan (unknown corner): the driver's plan stays active.
         rt.set_coach_plan(Plan::parse("[[trigger]]\ncorner = \"T99\"\ntext = \"x\"").unwrap());
         std::thread::sleep(Duration::from_millis(300));
         let st = rt.status();

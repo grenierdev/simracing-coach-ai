@@ -1,14 +1,14 @@
-//! Alignement d'un tour sur une grille régulière de `LapDistPct`.
+//! Alignment of a lap on a regular `LapDistPct` grid.
 
 use telemetry::Lap;
 use telemetry::trace::resample;
 
-/// Un tour rééchantillonné : chaque canal a `n` valeurs aux positions `i / n`.
+/// A resampled lap: each channel has `n` values at positions `i / n`.
 #[derive(Debug, Clone)]
 pub struct AlignedLap {
     pub n: usize,
     pub lap_time: f64,
-    /// Temps écoulé depuis la ligne, s. `time[0] = 0` ; `lap_time` correspond à pct = 1.
+    /// Time elapsed since the line, s. `time[0] = 0`; `lap_time` corresponds to pct = 1.
     pub time: Vec<f64>,
     pub speed: Vec<f64>,
     pub throttle: Vec<f64>,
@@ -19,7 +19,7 @@ pub struct AlignedLap {
     pub gear: Vec<f64>,
 }
 
-/// Taille de grille : environ un point par mètre, bornée.
+/// Grid size: about one point per meter, bounded.
 pub fn grid_size(track_length_m: Option<f64>) -> usize {
     match track_length_m {
         Some(l) if l.is_finite() && l > 0.0 => (l.round() as usize).clamp(1000, 10_000),
@@ -33,8 +33,8 @@ impl AlignedLap {
         let s = &lap.samples;
         let ch = |f: fn(&telemetry::Sample) -> f64| resample(s, f, &grid);
 
-        // Temps : on ancre (0, 0) et (1, lap_time) pour que les extrémités de la
-        // grille ne dépendent pas de la position exacte du premier échantillon.
+        // Time: anchor (0, 0) and (1, lap_time) so that the ends of the grid do
+        // not depend on the exact position of the first sample.
         let mut pts: Vec<(f64, f64)> = vec![(0.0, 0.0)];
         let mut last = 0.0;
         for x in s {
@@ -79,7 +79,7 @@ impl AlignedLap {
         ((pct.rem_euclid(1.0) * self.n as f64).round() as usize) % self.n
     }
 
-    /// Temps écoulé interpolé à la position `pct`.
+    /// Elapsed time interpolated at position `pct`.
     pub fn time_at(&self, pct: f64) -> f64 {
         let x = pct.clamp(0.0, 1.0) * self.n as f64;
         let i = x.floor() as usize;
@@ -94,8 +94,8 @@ impl AlignedLap {
         self.time[i] + (next - self.time[i]) * (x - i as f64)
     }
 
-    /// Durée pour aller de l'indice `a` à l'indice `b` (sens de la marche, en
-    /// passant la ligne si `b < a`).
+    /// Duration to go from index `a` to index `b` (in the driving direction,
+    /// crossing the line if `b < a`).
     pub fn duration(&self, a: usize, b: usize) -> f64 {
         if b >= a {
             self.time[b] - self.time[a]
@@ -105,9 +105,9 @@ impl AlignedLap {
     }
 }
 
-/// Delta de temps point par point : positif = `lap` est en retard sur `reference`.
+/// Point-by-point time delta: positive = `lap` is behind `reference`.
 pub fn delta_trace(lap: &AlignedLap, reference: &AlignedLap) -> Vec<f64> {
-    assert_eq!(lap.n, reference.n, "grilles différentes");
+    assert_eq!(lap.n, reference.n, "different grids");
     lap.time
         .iter()
         .zip(&reference.time)
@@ -139,7 +139,7 @@ mod tests {
     fn same_lap_has_zero_delta() {
         let track = SyntheticTrack::demo();
         let lap = lap_from(track.simulate_lap(1.0, 100.0, 0.0));
-        // Même tour, un échantillon sur deux : mêmes temps aux mêmes positions.
+        // Same lap, every other sample: same times at the same positions.
         let mut half = lap.clone();
         half.samples = lap.samples.iter().step_by(2).copied().collect();
         let a = AlignedLap::new(&lap, 2000);
@@ -157,7 +157,7 @@ mod tests {
         let a = AlignedLap::new(&slow, 2000);
         let b = AlignedLap::new(&fast, 2000);
         let d = delta_trace(&a, &b);
-        // Le delta croît globalement et finit près de l'écart des temps au tour.
+        // The delta grows overall and ends near the lap time difference.
         let expected = slow.lap_time - fast.lap_time;
         let end = a.time_at(0.9999) - b.time_at(0.9999);
         assert!(expected > 0.5);

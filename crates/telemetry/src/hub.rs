@@ -1,9 +1,9 @@
-//! Boucle rapide de télémétrie : un thread dédié lit la source à 60 Hz, découpe
-//! les tours, détecte les virages et publie un instantané pour l'interface.
+//! Fast telemetry loop: a dedicated thread reads the source at 60 Hz, splits
+//! laps, detects corners and publishes a snapshot for the UI.
 //!
-//! Les consommateurs temps réel (moteur de déclencheurs, jalon 3) s'abonnent aux
-//! échantillons via [`TelemetryHub::subscribe_samples`] ; l'interface lit
-//! [`LiveSnapshot`] à son rythme sans jamais bloquer la boucle.
+//! Real-time consumers (trigger engine, milestone 3) subscribe to samples via
+//! [`TelemetryHub::subscribe_samples`]; the UI reads [`LiveSnapshot`] at its
+//! own pace without ever blocking the loop.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,7 +36,7 @@ pub enum TelemetryEvent {
     Corners(Arc<Vec<Corner>>),
 }
 
-/// État courant, copié par l'interface.
+/// Current state, copied by the UI.
 #[derive(Debug, Clone, Default)]
 pub struct LiveSnapshot {
     pub source: String,
@@ -45,11 +45,11 @@ pub struct LiveSnapshot {
     pub sample: Option<Sample>,
     pub current_lap_elapsed: Option<f64>,
     pub current_lap_flags: Option<LapFlags>,
-    /// Tours terminés, du plus ancien au plus récent.
+    /// Completed laps, oldest to most recent.
     pub laps: Vec<Arc<Lap>>,
     pub best_lap: Option<Arc<Lap>>,
     pub corners: Arc<Vec<Corner>>,
-    /// Fréquence d'échantillonnage mesurée, Hz.
+    /// Measured sample rate, Hz.
     pub sample_rate_hz: f64,
     pub samples_received: u64,
 }
@@ -60,7 +60,7 @@ pub struct TelemetryHubConfig {
     pub corners: CornerDetectionParams,
 }
 
-/// Accès partagé à l'instantané, utilisable depuis d'autres threads.
+/// Shared access to the snapshot, usable from other threads.
 #[derive(Clone)]
 pub struct SnapshotHandle(Arc<Mutex<LiveSnapshot>>);
 
@@ -94,7 +94,7 @@ impl TelemetryHub {
             std::thread::Builder::new()
                 .name("telemetry".into())
                 .spawn(move || run(source, cfg, snapshot, tx, subs, stop))
-                .expect("démarrage du thread de télémétrie")
+                .expect("starting the telemetry thread")
         };
         TelemetryHub {
             snapshot,
@@ -117,8 +117,8 @@ impl TelemetryHub {
         &self.events
     }
 
-    /// Flux de tous les échantillons. Un abonné trop lent perd des échantillons
-    /// plutôt que de ralentir la boucle (file bornée à 2 s).
+    /// Stream of all samples. A subscriber that is too slow loses samples
+    /// rather than slowing down the loop (queue bounded at 2 s).
     pub fn subscribe_samples(&self) -> Receiver<Sample> {
         let (tx, rx) = bounded(120);
         self.sample_subs.lock().unwrap().push(tx);
@@ -148,7 +148,7 @@ fn run(
     stop: Arc<AtomicBool>,
 ) {
     let mut rec = LapRecorder::new(cfg.laps);
-    let mut corners_from: Option<f64> = None; // temps du tour ayant servi aux virages
+    let mut corners_from: Option<f64> = None; // lap time of the lap used for corners
     let mut rate_window: VecDeque<Instant> = VecDeque::with_capacity(128);
     let publish_every = Duration::from_millis(16);
     let mut last_publish = Instant::now();
@@ -164,7 +164,7 @@ fn run(
             Ok(Some(ev)) => ev,
             Ok(None) => continue,
             Err(e) => {
-                tracing::warn!("télémétrie : {e}");
+                tracing::warn!("telemetry: {e}");
                 set_state(ConnectionState::Error(e.to_string()));
                 std::thread::sleep(Duration::from_secs(1));
                 continue;
@@ -207,7 +207,7 @@ fn run(
 
                 if let Some(LapEvent::Completed(lap)) = rec.push(sample) {
                     let _ = events.send(TelemetryEvent::LapCompleted(lap.clone()));
-                    // Virages : détectés sur le meilleur tour valide, recalculés s'il s'améliore.
+                    // Corners: detected on the best valid lap, recomputed if it improves.
                     let best = rec.best_lap().cloned();
                     let mut new_corners = None;
                     if let Some(best) = &best

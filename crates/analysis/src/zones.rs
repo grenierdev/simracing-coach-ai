@@ -1,22 +1,22 @@
-//! Découpage du tour en zones, une par virage.
+//! Splitting of the lap into zones, one per corner.
 //!
-//! Chaque zone va du milieu de la ligne droite précédente au milieu de la
-//! suivante : les zones couvrent tout le tour sans se chevaucher, donc la somme
-//! des deltas par virage égale le delta du tour.
+//! Each zone runs from the middle of the previous straight to the middle of the
+//! next one: zones cover the whole lap without overlapping, so the sum of the
+//! per-corner deltas equals the lap delta.
 
 use telemetry::Corner;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CornerZone {
     pub corner: Corner,
-    /// Début de zone, pct (inclus).
+    /// Zone start, pct (inclusive).
     pub start_pct: f64,
-    /// Fin de zone, pct ; égale au début de la zone suivante.
+    /// Zone end, pct; equal to the start of the next zone.
     pub end_pct: f64,
 }
 
 impl CornerZone {
-    /// Indices de grille de la zone, dans le sens de la marche (fin incluse).
+    /// Grid indices of the zone, in the driving direction (end inclusive).
     pub fn indices(&self, n: usize) -> Vec<usize> {
         let a = ((self.start_pct * n as f64).round() as usize) % n;
         let b = ((self.end_pct * n as f64).round() as usize) % n;
@@ -35,12 +35,12 @@ impl CornerZone {
     }
 }
 
-/// Distance circulaire de `a` vers `b` dans le sens de la marche, en pct.
+/// Circular distance from `a` to `b` in the driving direction, in pct.
 pub fn forward(a: f64, b: f64) -> f64 {
     (b - a).rem_euclid(1.0)
 }
 
-/// Zones des virages (dans l'ordre de la piste).
+/// Corner zones (in track order).
 pub fn build_zones(corners: &[Corner]) -> Vec<CornerZone> {
     let m = corners.len();
     if m == 0 {
@@ -55,7 +55,7 @@ pub fn build_zones(corners: &[Corner]) -> Vec<CornerZone> {
             end_pct: mid,
         }];
     }
-    // Frontière entre le virage i et le suivant : milieu de la ligne droite.
+    // Boundary between corner i and the next one: middle of the straight.
     let boundary = |i: usize| {
         let a = &corners[i];
         let b = &corners[(i + 1) % m];

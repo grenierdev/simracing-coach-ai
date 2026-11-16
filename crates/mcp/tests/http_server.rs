@@ -1,4 +1,4 @@
-//! Le serveur MCP servi en HTTP, interrogé par un vrai client MCP.
+//! The MCP server served over HTTP, queried by a real MCP client.
 
 use std::sync::{Arc, Mutex};
 
@@ -87,7 +87,7 @@ async fn tools_over_http_with_bearer_token() {
     let server = McpServerHandle::start(data.clone()).await.unwrap();
     assert!(server.url.starts_with("http://127.0.0.1:"));
 
-    // Sans jeton : refusé.
+    // Without a token: rejected.
     let resp = reqwest_status(&server.url, None).await;
     assert_eq!(resp, 401);
 
@@ -95,7 +95,7 @@ async fn tools_over_http_with_bearer_token() {
         StreamableHttpClientTransportConfig::with_uri(server.url.clone())
             .auth_header(server.token.clone()),
     );
-    let client = ().serve(transport).await.expect("connexion MCP");
+    let client = ().serve(transport).await.expect("MCP connection");
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
@@ -129,7 +129,7 @@ async fn tools_over_http_with_bearer_token() {
     let v: Value = serde_json::from_str(&text_of(&r)).unwrap();
     assert!(v["points"].as_u64().unwrap() <= 100);
 
-    // Erreur métier : résultat d'erreur lisible, pas une erreur de protocole.
+    // Domain error: readable error result, not a protocol error.
     let r = client
         .call_tool(
             CallToolRequestParams::new("get_corner_summary")
@@ -165,23 +165,23 @@ async fn tools_over_http_with_bearer_token() {
     assert_eq!(
         data.plan.lock().unwrap().as_ref().unwrap().triggers.len(),
         1,
-        "plan inchangé"
+        "plan unchanged"
     );
 
     client
         .call_tool(
             CallToolRequestParams::new("say")
-                .with_arguments(args(json!({"text": "Je regarde le T5."}))),
+                .with_arguments(args(json!({"text": "Looking at T5."}))),
         )
         .await
         .unwrap();
-    assert_eq!(*data.said.lock().unwrap(), vec!["Je regarde le T5."]);
+    assert_eq!(*data.said.lock().unwrap(), vec!["Looking at T5."]);
     assert!(data.calls.lock().unwrap().len() >= 5);
     client.cancel().await.unwrap();
 }
 
 async fn reqwest_status(url: &str, token: Option<&str>) -> u16 {
-    // Requête HTTP brute (initialize) pour vérifier l'authentification.
+    // Raw HTTP request (initialize) to check authentication.
     let mut req = reqwest::Client::new()
         .post(url)
         .header("content-type", "application/json")
@@ -211,9 +211,9 @@ fn merge_plan_replaces_same_id() {
         max_delay_m: None,
     };
     let p = merge_plan(None, vec![spec("a", "1"), spec("b", "2")], PlanMode::Add);
-    let p = merge_plan(Some(p), vec![spec("a", "nouveau")], PlanMode::Add);
+    let p = merge_plan(Some(p), vec![spec("a", "new")], PlanMode::Add);
     assert_eq!(p.triggers.len(), 2);
-    assert_eq!(p.triggers[0].text, "nouveau");
+    assert_eq!(p.triggers[0].text, "new");
     let p = merge_plan(Some(p), vec![spec("c", "3")], PlanMode::Replace);
     assert_eq!(p.triggers.len(), 1);
 }

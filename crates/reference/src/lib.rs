@@ -1,11 +1,11 @@
-//! Import du tour de référence.
+//! Reference lap import.
 //!
-//! - CSV exporté de Garage61 (un tour, 60 Hz, noms de canaux iRacing). Les
-//!   colonnes sont reconnues par leur nom ; les absentes valent `NaN`.
-//! - Fichier .ibt : le meilleur tour valide du fichier.
+//! - CSV exported from Garage61 (one lap, 60 Hz, iRacing channel names).
+//!   Columns are recognized by name; missing ones are `NaN`.
+//! - .ibt file: the best valid lap in the file.
 //!
-//! Colonnes Garage61 attendues (non vérifiées sur un export réel, voir
-//! `docs/verifications.md`) : `Speed, LapDistPct, Lat, Lon, Brake, Throttle, RPM,
+//! Expected Garage61 columns (not checked against a real export, see
+//! `docs/verifications.md`): `Speed, LapDistPct, Lat, Lon, Brake, Throttle, RPM,
 //! SteeringWheelAngle, Gear, Clutch, ABSActive, DRSActive, LatAccel, LongAccel,
 //! VertAccel, Yaw, YawRate, PositionType`.
 
@@ -22,22 +22,22 @@ pub use estimate::{ChannelOrigin, RotationOrigin};
 
 #[derive(Debug, Error)]
 pub enum ReferenceError {
-    #[error("E/S : {0}")]
+    #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
-    #[error("CSV : {0}")]
+    #[error("CSV: {0}")]
     Csv(#[from] csv::Error),
-    #[error(".ibt : {0}")]
+    #[error(".ibt: {0}")]
     Ibt(#[from] telemetry::ibt::IbtError),
-    #[error("colonne obligatoire absente : {0}")]
+    #[error("required column missing: {0}")]
     MissingColumn(&'static str),
-    #[error("tour inexploitable : {0}")]
+    #[error("unusable lap: {0}")]
     Unusable(String),
-    #[error("format non reconnu (attendu .csv ou .ibt) : {0}")]
+    #[error("unrecognized format (expected .csv or .ibt): {0}")]
     UnknownFormat(String),
 }
 
-/// Métadonnées tirées du nom de fichier Garage61 :
-/// `Garage 61 - <pilote> - <voiture> - <piste> - MM.SS.mmm - <id>.csv`.
+/// Metadata taken from the Garage61 file name:
+/// `Garage 61 - <driver> - <car> - <track> - MM.SS.mmm - <id>.csv`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Garage61Meta {
     pub driver: Option<String>,
@@ -49,18 +49,18 @@ pub struct Garage61Meta {
 
 #[derive(Debug, Clone)]
 pub struct ReferenceLap {
-    /// Libellé affiché (pilote, voiture, temps).
+    /// Displayed label (driver, car, time).
     pub label: String,
     pub lap: Lap,
     pub rotation: RotationOrigin,
     pub driver: Option<String>,
     pub car: Option<String>,
     pub track: Option<String>,
-    /// Longueur de piste connue (YAML du .ibt), m.
+    /// Known track length (.ibt YAML), m.
     pub track_length_m: Option<f64>,
 }
 
-/// Charge une référence selon l'extension du fichier.
+/// Loads a reference according to the file extension.
 pub fn load(path: impl AsRef<Path>) -> Result<ReferenceLap, ReferenceError> {
     let path = path.as_ref();
     let name = path
@@ -89,14 +89,14 @@ pub fn parse_garage61_filename(name: &str) -> Garage61Meta {
     Garage61Meta {
         driver: Some(parts[1].to_string()),
         car: Some(parts[2].to_string()),
-        // Le nom de piste peut lui-même contenir « - ».
+        // The track name may itself contain " - ".
         track: Some(parts[3..n - 2].join(" - ")),
         lap_time,
         lap_id: Some(parts[n - 1].to_string()),
     }
 }
 
-/// `01.58.123` ou `1:58.123` → 118.123 s.
+/// `01.58.123` or `1:58.123` → 118.123 s.
 fn parse_lap_time(s: &str) -> Option<f64> {
     let s = s.replace(':', ".");
     let p: Vec<&str> = s.split('.').collect();
@@ -120,7 +120,7 @@ fn parse_value(s: &str) -> f64 {
     }
 }
 
-/// Lit un CSV Garage61. `file_name` sert aux métadonnées.
+/// Reads a Garage61 CSV. `file_name` is used for metadata.
 pub fn from_garage61_csv(
     reader: impl Read,
     file_name: &str,
@@ -171,12 +171,12 @@ pub fn from_garage61_csv(
     }
     if rows.len() < 60 {
         return Err(ReferenceError::Unusable(format!(
-            "{} lignes seulement",
+            "only {} rows",
             rows.len()
         )));
     }
 
-    // Unités : certains exports donnent des pourcentages 0..100.
+    // Units: some exports give percentages 0..100.
     let max_of = |k: usize| {
         rows.iter()
             .map(|r| r[k])
@@ -221,8 +221,8 @@ pub fn from_garage61_csv(
         .collect();
     let yaw: Vec<f64> = rows.iter().map(|r| r[13]).collect();
 
-    // Bords du tour : on retire la fin du tour précédent en tête et le début
-    // du tour suivant en queue, pour garder pct croissant.
+    // Lap edges: drop the end of the previous lap at the head and the start of
+    // the next lap at the tail, to keep pct increasing.
     let start = samples
         .iter()
         .position(|s| s.lap_dist_pct < 0.5)
@@ -236,7 +236,7 @@ pub fn from_garage61_csv(
     samples.truncate(end);
     samples.drain(..start);
     if samples.len() < 60 {
-        return Err(ReferenceError::Unusable("tour trop court".into()));
+        return Err(ReferenceError::Unusable("lap too short".into()));
     }
     let t0 = samples[0].session_time;
     for s in &mut samples {
@@ -273,8 +273,8 @@ pub fn from_garage61_csv(
     })
 }
 
-/// Temps au tour quand l'export s'arrête avant la ligne : on prolonge à la
-/// vitesse de progression des dernières secondes.
+/// Lap time when the export stops before the line: extrapolated at the
+/// progress rate of the last seconds.
 fn extrapolated_lap_time(samples: &[Sample]) -> f64 {
     let last = samples[samples.len() - 1];
     let back = &samples[samples.len().saturating_sub(60)];
@@ -293,7 +293,7 @@ fn format_time(secs: f64) -> String {
     format!("{}:{:02}.{:03}", ms / 60_000, (ms / 1000) % 60, ms % 1000)
 }
 
-/// Meilleur tour valide d'un .ibt.
+/// Best valid lap of an .ibt.
 pub fn from_ibt(file: &IbtFile, file_name: &str) -> Result<ReferenceLap, ReferenceError> {
     let mut rec = LapRecorder::new(LapRecorderConfig {
         history: 10_000,
@@ -304,7 +304,7 @@ pub fn from_ibt(file: &IbtFile, file_name: &str) -> Result<ReferenceLap, Referen
     }
     let best = rec
         .best_lap()
-        .ok_or_else(|| ReferenceError::Unusable("aucun tour valide dans le fichier".into()))?;
+        .ok_or_else(|| ReferenceError::Unusable("no valid lap in the file".into()))?;
     let mut lap = (**best).clone();
     let rotation = estimate::fill_rotation(&mut lap.samples, None);
     let car =
@@ -312,7 +312,7 @@ pub fn from_ibt(file: &IbtFile, file_name: &str) -> Result<ReferenceLap, Referen
     let track = Some(file.session.track_label()).filter(|t| !t.is_empty());
     Ok(ReferenceLap {
         label: format!(
-            "{} · tour {} · {}",
+            "{} · lap {} · {}",
             file_name,
             lap.number,
             format_time(lap.lap_time)
@@ -326,7 +326,7 @@ pub fn from_ibt(file: &IbtFile, file_name: &str) -> Result<ReferenceLap, Referen
     })
 }
 
-/// Écrit un tour au format CSV Garage61 (tests et outils).
+/// Writes a lap in Garage61 CSV format (tests and tools).
 pub fn write_garage61_csv(samples: &[Sample], columns: &[&str]) -> String {
     let mut out = columns.join(",");
     out.push('\n');
@@ -387,9 +387,9 @@ mod tests {
     #[test]
     fn parses_filename() {
         let m = parse_garage61_filename(
-            "Garage 61 - Jean Pilote - Porsche 911 GT3 R (992) - Circuit de Spa-Francorchamps - Grand Prix Pits - 02.17.456 - 01ABC.csv",
+            "Garage 61 - John Driver - Porsche 911 GT3 R (992) - Circuit de Spa-Francorchamps - Grand Prix Pits - 02.17.456 - 01ABC.csv",
         );
-        assert_eq!(m.driver.as_deref(), Some("Jean Pilote"));
+        assert_eq!(m.driver.as_deref(), Some("John Driver"));
         assert_eq!(
             m.track.as_deref(),
             Some("Circuit de Spa-Francorchamps - Grand Prix Pits")
@@ -408,7 +408,7 @@ mod tests {
         let lap = track.simulate_lap(0.98, 0.0, 0.0);
         let truth = lap.len() as f64 / 60.0;
         let csv = write_garage61_csv(&lap, ALL);
-        let r = from_garage61_csv(csv.as_bytes(), "tour.csv").unwrap();
+        let r = from_garage61_csv(csv.as_bytes(), "lap.csv").unwrap();
         assert_eq!(r.rotation.yaw_rate, ChannelOrigin::Measured);
         assert_eq!(r.lap.samples.len(), lap.len());
         assert!((r.lap.lap_time - truth).abs() < 0.05, "{}", r.lap.lap_time);
@@ -424,13 +424,13 @@ mod tests {
             .filter(|c| !matches!(*c, "YawRate" | "LatAccel" | "Yaw"))
             .collect();
         let csv = write_garage61_csv(&lap, &cols);
-        let r = from_garage61_csv(csv.as_bytes(), "tour.csv").unwrap();
+        let r = from_garage61_csv(csv.as_bytes(), "lap.csv").unwrap();
         assert_eq!(r.rotation.yaw_rate, ChannelOrigin::FromPosition);
         assert_eq!(r.rotation.lat_accel, ChannelOrigin::FromYawRate);
 
-        // Au milieu de chaque virage, l'estimation moyenne est proche de la vraie
-        // valeur. Aux transitions droite/virage, la courbure synthétique est
-        // discontinue et le lissage introduit un retard : on ne les juge pas.
+        // In the middle of each corner, the mean estimate is close to the true
+        // value. At straight/corner transitions, the synthetic curvature is
+        // discontinuous and smoothing introduces a lag: they are not judged.
         let total = track.length_m();
         for (_, mid) in track.expected_corners() {
             let near = |s: &&Sample| ((s.lap_dist_pct as f64 - mid) * total).abs() < 10.0;
@@ -439,10 +439,10 @@ mod tests {
                 xs.iter().sum::<f64>() / xs.len() as f64
             };
             let (est, truth) = (mean(&r.lap.samples), mean(&lap));
-            eprintln!("virage à {mid:.3} : estimé {est:.3}, vrai {truth:.3}");
+            eprintln!("corner at {mid:.3}: estimated {est:.3}, true {truth:.3}");
             assert!(
                 (est - truth).abs() < 0.1 * truth.abs(),
-                "{est} vs {truth} à {mid}"
+                "{est} vs {truth} at {mid}"
             );
         }
 
@@ -455,11 +455,11 @@ mod tests {
         let track = SyntheticTrack::demo();
         let lap = track.simulate_lap(1.0, 0.0, 0.0);
         let truth = lap.len() as f64 / 60.0;
-        // Deux échantillons du tour précédent en tête, fin du tour coupée à 98 %.
+        // Two samples from the previous lap at the head, lap end cut at 98 %.
         let mut rows = vec![lap[lap.len() - 2], lap[lap.len() - 1]];
         rows.extend(lap.iter().copied().filter(|s| s.lap_dist_pct < 0.98));
         let csv = write_garage61_csv(&rows, ALL);
-        let r = from_garage61_csv(csv.as_bytes(), "tour.csv").unwrap();
+        let r = from_garage61_csv(csv.as_bytes(), "lap.csv").unwrap();
         assert!(r.lap.samples[0].lap_dist_pct < 0.01);
         assert!(
             (r.lap.lap_time - truth).abs() < 0.3,
@@ -501,6 +501,6 @@ mod tests {
         let r = from_ibt(&file, "s.ibt").unwrap();
         assert!(r.lap.is_valid());
         assert_eq!(r.rotation.yaw_rate, ChannelOrigin::Measured);
-        assert_eq!(r.car.as_deref(), Some("Voiture synthétique"));
+        assert_eq!(r.car.as_deref(), Some("Synthetic car"));
     }
 }

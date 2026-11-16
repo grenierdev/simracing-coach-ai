@@ -1,6 +1,6 @@
 [package]
 name = "triggers"
-description = "Moteur de consignes : déclenchement par position, conditions, priorités, zones de silence"
+description = "Trigger engine: position-based firing, conditions, priorities, quiet zones"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

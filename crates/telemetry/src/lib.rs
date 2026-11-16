@@ -1,5 +1,5 @@
-//! Télémétrie iRacing : lecture live (mémoire partagée Windows) et rejeu de
-//! fichiers .ibt, découpage en tours, détection des virages, rééchantillonnage.
+//! iRacing telemetry: live reading (Windows shared memory) and .ibt file
+//! replay, lap splitting, corner detection, resampling.
 
 pub mod corners;
 pub mod hub;

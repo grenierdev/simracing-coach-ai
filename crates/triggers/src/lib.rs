@@ -1,10 +1,10 @@
-//! Moteur de consignes du coach (boucle rapide).
+//! Coach trigger engine (fast loop).
 //!
-//! - [`plan`] : fichier de plan (TOML), résolution des positions par virage,
-//!   zones de silence tirées des freinages de la référence ;
-//! - [`engine`] : déclenchement par position, condition, priorité, expiration,
-//!   règle dure « aucune parole en zone de freinage » ;
-//! - [`runtime`] : thread qui relie la télémétrie, le moteur et la parole.
+//! - [`plan`]: plan file (TOML), per-corner position resolution, quiet zones
+//!   taken from the reference braking zones;
+//! - [`engine`]: firing by position, condition, priority, expiry, hard rule
+//!   "no speech in a braking zone";
+//! - [`runtime`]: thread that connects telemetry, the engine and speech.
 
 pub mod engine;
 pub mod plan;

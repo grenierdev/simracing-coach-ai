@@ -1,4 +1,4 @@
-//! De bout en bout : session synthétique écrite en .ibt, relue, rejouée dans le hub.
+//! End to end: synthetic session written as .ibt, read back, replayed through the hub.
 
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ fn synthetic_file(laps: usize) -> (SyntheticTrack, IbtFile) {
     let bytes = track.session_ibt(laps, 7).to_bytes();
     (
         track,
-        IbtFile::from_bytes(bytes).expect("ibt synthétique lisible"),
+        IbtFile::from_bytes(bytes).expect("readable synthetic ibt"),
     )
 }
 
@@ -21,8 +21,8 @@ fn ibt_roundtrip_preserves_header_and_session() {
     let (track, file) = synthetic_file(2);
     assert_eq!(file.tick_rate(), 60.0);
     assert!(file.len() > 60 * 60);
-    assert_eq!(file.session.track_display_name, "Circuit synthétique");
-    assert_eq!(file.session.car_screen_name, "Voiture synthétique");
+    assert_eq!(file.session.track_display_name, "Synthetic Circuit");
+    assert_eq!(file.session.car_screen_name, "Synthetic car");
     let len = file.session.track_length_m.unwrap();
     assert!((len - track.length_m()).abs() < 10.0);
     let first = file.sample(0).unwrap();
@@ -34,7 +34,7 @@ fn ibt_roundtrip_preserves_header_and_session() {
 #[test]
 fn replay_through_hub_records_laps_and_corners() {
     let (track, file) = synthetic_file(3);
-    let source = ReplaySource::new(file, "synthétique", f64::INFINITY, false);
+    let source = ReplaySource::new(file, "synthetic", f64::INFINITY, false);
     let hub = TelemetryHub::spawn(Box::new(source), TelemetryHubConfig::default());
     let samples = hub.subscribe_samples();
 
@@ -54,10 +54,10 @@ fn replay_through_hub_records_laps_and_corners() {
             _ => {}
         }
     }
-    assert!(ended, "le rejeu doit se terminer");
+    assert!(ended, "the replay must end");
     assert!(n_samples > 0);
-    // Tour de sortie partiel + 3 tours ; le dernier tour se termine au dernier
-    // échantillon sans repasser la ligne, il reste donc en cours.
+    // Partial out lap + 3 laps; the last lap ends at the last sample without
+    // crossing the line again, so it stays in progress.
     assert_eq!(
         laps.len(),
         3,
@@ -67,9 +67,9 @@ fn replay_through_hub_records_laps_and_corners() {
     assert!(!laps[0].flags.complete);
     assert!(laps[1].is_valid() && laps[2].is_valid());
     for l in &laps[1..] {
-        assert!((45.0..90.0).contains(&l.lap_time), "temps {}", l.lap_time);
+        assert!((45.0..90.0).contains(&l.lap_time), "time {}", l.lap_time);
     }
-    let corners = corners.expect("virages détectés");
+    let corners = corners.expect("corners detected");
     assert_eq!(corners.len(), track.expected_corners().len());
 
     let snap = hub.snapshot();

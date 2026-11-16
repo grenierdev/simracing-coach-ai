@@ -1,6 +1,6 @@
 [package]
 name = "telemetry"
-description = "Lecture de la télémétrie iRacing (mémoire partagée et .ibt), découpage en tours, détection des virages"
+description = "iRacing telemetry reading (shared memory and .ibt), lap splitting, corner detection"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

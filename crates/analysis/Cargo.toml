@@ -1,6 +1,6 @@
 [package]
 name = "analysis"
-description = "Alignement des tours, zones de virage, métriques et deltas par virage"
+description = "Lap alignment, corner zones, metrics and per-corner deltas"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

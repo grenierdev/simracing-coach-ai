@@ -1,13 +1,13 @@
-//! Détection des virages à partir d'un tour.
+//! Corner detection from a lap.
 //!
-//! Méthode : courbure de la trajectoire `κ = YawRate / Speed` (rad/m), repli sur
-//! `LatAccel / Speed²` si `YawRate` manque. La courbure est rééchantillonnée sur
-//! une grille de distance régulière, lissée, puis seuillée avec hystérésis
-//! (entrée sous un rayon `enter_radius_m`, sortie au-dessus de `exit_radius_m`).
-//! Les segments voisins de même sens sont fusionnés, les segments trop courts
-//! écartés, et un virage qui chevauche la ligne d'arrivée est recollé.
+//! Method: path curvature `κ = YawRate / Speed` (rad/m), falling back to
+//! `LatAccel / Speed²` if `YawRate` is missing. The curvature is resampled on a
+//! regular distance grid, smoothed, then thresholded with hysteresis (entry
+//! below radius `enter_radius_m`, exit above `exit_radius_m`). Neighboring
+//! segments in the same direction are merged, segments that are too short are
+//! discarded, and a corner that straddles the finish line is stitched back.
 //!
-//! Convention de signe : `YawRate` positif = rotation vers la gauche.
+//! Sign convention: positive `YawRate` = rotation to the left.
 
 use crate::laps::Lap;
 use crate::sample::Sample;
@@ -21,19 +21,19 @@ pub enum Direction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Corner {
-    /// Numéro affiché (T1, T2...), à partir de 1 dans l'ordre de la piste.
+    /// Displayed number (T1, T2...), starting at 1 in track order.
     pub number: u32,
     pub direction: Direction,
-    /// Début du virage, pct. Si `start_pct > end_pct`, le virage chevauche la ligne.
+    /// Corner start, pct. If `start_pct > end_pct`, the corner straddles the line.
     pub start_pct: f64,
     pub end_pct: f64,
-    /// Point de vitesse minimale (repère de l'apex pour le coaching), pct.
+    /// Minimum speed point (apex marker for coaching), pct.
     pub apex_pct: f64,
-    /// Vitesse minimale dans le virage, m/s.
+    /// Minimum speed in the corner, m/s.
     pub min_speed: f64,
-    /// Rayon minimal de la trajectoire, m.
+    /// Minimum path radius, m.
     pub min_radius_m: f64,
-    /// Longueur du virage, m.
+    /// Corner length, m.
     pub length_m: f64,
 }
 
@@ -53,19 +53,19 @@ impl Corner {
 
 #[derive(Debug, Clone, Copy)]
 pub struct CornerDetectionParams {
-    /// Pas de la grille de distance, m.
+    /// Distance grid step, m.
     pub step_m: f64,
-    /// Fenêtre du lissage (moyenne glissante centrée), m.
+    /// Smoothing window (centered moving average), m.
     pub smooth_m: f64,
-    /// Rayon sous lequel un virage commence, m.
+    /// Radius below which a corner starts, m.
     pub enter_radius_m: f64,
-    /// Rayon au-dessus duquel il se termine, m.
+    /// Radius above which it ends, m.
     pub exit_radius_m: f64,
-    /// Longueur minimale d'un virage, m.
+    /// Minimum corner length, m.
     pub min_length_m: f64,
-    /// Écart maximal entre deux segments de même sens fusionnés, m.
+    /// Maximum gap between two merged segments in the same direction, m.
     pub merge_gap_m: f64,
-    /// Vitesse sous laquelle la courbure n'est pas calculée (bruit), m/s.
+    /// Speed below which curvature is not computed (noise), m/s.
     pub min_speed: f64,
 }
 
@@ -97,7 +97,7 @@ fn curvature(s: &Sample, min_speed: f64) -> Option<f64> {
     }
 }
 
-/// Interpolation linéaire de `ys` (aux abscisses croissantes `xs`) en `x`.
+/// Linear interpolation of `ys` (at increasing abscissas `xs`) at `x`.
 fn interp(xs: &[f64], ys: &[f64], x: f64, j: &mut usize) -> f64 {
     while *j + 1 < xs.len() && xs[*j + 1] < x {
         *j += 1;
@@ -115,7 +115,7 @@ fn interp(xs: &[f64], ys: &[f64], x: f64, j: &mut usize) -> f64 {
     ys[*j] + (ys[*j + 1] - ys[*j]) * (x - x0) / (x1 - x0)
 }
 
-/// Moyenne glissante centrée, circulaire (le tour boucle).
+/// Centered moving average, circular (the lap loops).
 fn smooth_circular(v: &[f64], half: usize) -> Vec<f64> {
     let n = v.len();
     if n == 0 || half == 0 {
@@ -135,17 +135,17 @@ fn smooth_circular(v: &[f64], half: usize) -> Vec<f64> {
 #[derive(Debug, Clone, Copy)]
 struct Segment {
     start: usize,
-    end: usize, // inclus
+    end: usize, // inclusive
     dir: Direction,
 }
 
-/// Détecte les virages d'un tour complet.
+/// Detects the corners of a complete lap.
 pub fn detect_corners(lap: &Lap, params: &CornerDetectionParams) -> Vec<Corner> {
     detect_corners_in(&lap.samples, params)
 }
 
 pub fn detect_corners_in(samples: &[Sample], params: &CornerDetectionParams) -> Vec<Corner> {
-    // Points strictement croissants en distance.
+    // Points strictly increasing in distance.
     let dist = distance_m(samples);
     let mut xs = Vec::with_capacity(samples.len());
     let mut kappa = Vec::with_capacity(samples.len());
@@ -186,7 +186,7 @@ pub fn detect_corners_in(samples: &[Sample], params: &CornerDetectionParams) -> 
     let half = ((params.smooth_m / params.step_m) / 2.0).round() as usize;
     let k = smooth_circular(&k_raw, half);
 
-    // Seuillage avec hystérésis.
+    // Thresholding with hysteresis.
     let k_enter = 1.0 / params.enter_radius_m;
     let k_exit = 1.0 / params.exit_radius_m;
     let mut segs: Vec<Segment> = vec![];
@@ -228,7 +228,7 @@ pub fn detect_corners_in(samples: &[Sample], params: &CornerDetectionParams) -> 
         segs.push(seg);
     }
 
-    // Fusion des segments proches de même sens.
+    // Merge nearby segments in the same direction.
     let gap_pts = (params.merge_gap_m / params.step_m) as usize;
     let mut merged: Vec<Segment> = vec![];
     for seg in segs {
@@ -242,7 +242,7 @@ pub fn detect_corners_in(samples: &[Sample], params: &CornerDetectionParams) -> 
         merged.push(seg);
     }
 
-    // Virage à cheval sur la ligne : le dernier et le premier segment se rejoignent.
+    // Corner straddling the line: the last and first segments join.
     let mut wrapped: Option<(Segment, Segment)> = None;
     if merged.len() >= 2 {
         let first = merged[0];
@@ -284,7 +284,7 @@ pub fn detect_corners_in(samples: &[Sample], params: &CornerDetectionParams) -> 
     if let Some((last, first)) = wrapped
         && let Some(c) = make(&[last, first])
     {
-        // Numérotation : un virage qui commence avant la ligne reste le dernier.
+        // Numbering: a corner that starts before the line stays last.
         corners.push(c);
     }
     for (i, c) in corners.iter_mut().enumerate() {
@@ -316,7 +316,7 @@ mod tests {
         for (c, (_, mid_pct)) in corners.iter().zip(&expected) {
             assert!(
                 c.contains(*mid_pct),
-                "{} [{:.3}, {:.3}] ne contient pas {mid_pct:.3}",
+                "{} [{:.3}, {:.3}] does not contain {mid_pct:.3}",
                 c.label(),
                 c.start_pct,
                 c.end_pct
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn opposite_directions_stay_separate() {
-        // Chicane droite-gauche collée : deux virages.
+        // Tight right-left chicane: two corners.
         let track = SyntheticTrack::new(vec![
             TrackSegment::Straight(800.0),
             TrackSegment::Right {

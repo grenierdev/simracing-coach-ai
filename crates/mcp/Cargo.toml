@@ -1,6 +1,6 @@
 [package]
 name = "mcp"
-description = "Serveur MCP embarqué : outils de télémétrie exposés à Claude"
+description = "Embedded MCP server: telemetry tools exposed to Claude"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

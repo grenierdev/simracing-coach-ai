@@ -1,9 +1,9 @@
-//! Analyse d'un tour face à la référence : alignement sur `LapDistPct`, zones de
-//! virage, métriques par virage (freinage, vitesse mini, reprise des gaz, roue
-//! libre, rotation) et deltas.
+//! Analysis of a lap against the reference: alignment on `LapDistPct`, corner
+//! zones, per-corner metrics (braking, minimum speed, throttle pickup,
+//! coasting, rotation) and deltas.
 //!
-//! Les virages sont détectés sur le tour de référence : c'est lui qui définit
-//! la carte de la piste, pour que la numérotation reste stable d'un tour à l'autre.
+//! Corners are detected on the reference lap: it defines the track map, so
+//! that numbering stays stable from one lap to the next.
 
 pub mod align;
 pub mod metrics;
@@ -19,7 +19,7 @@ pub use align::{AlignedLap, delta_trace, grid_size};
 pub use metrics::{CornerMetrics, corner_metrics};
 pub use zones::{CornerZone, build_zones};
 
-/// Carte de la piste tirée de la référence.
+/// Track map derived from the reference.
 #[derive(Debug, Clone)]
 pub struct TrackModel {
     pub length_m: f64,
@@ -32,15 +32,15 @@ pub struct CornerComparison {
     pub zone: CornerZone,
     pub lap: CornerMetrics,
     pub reference: CornerMetrics,
-    /// Temps perdu (+) ou gagné (−) dans la zone, s.
+    /// Time lost (+) or gained (−) in the zone, s.
     pub time_delta: f64,
-    /// Freinage plus tard (+) ou plus tôt (−) que la référence, m.
+    /// Braking later (+) or earlier (−) than the reference, m.
     pub brake_point_delta_m: Option<f64>,
-    /// Écart de vitesse minimale, m/s (− = plus lent).
+    /// Minimum speed difference, m/s (− = slower).
     pub min_speed_delta: f64,
-    /// Reprise des gaz plus tard (+) ou plus tôt (−), m.
+    /// Throttle pickup later (+) or earlier (−), m.
     pub throttle_on_delta_m: Option<f64>,
-    /// Rotation par unité de braquage rapportée à la référence (< 1 : moins de rotation).
+    /// Rotation per unit of steering relative to the reference (< 1: less rotation).
     pub rotation_entry_ratio: Option<f64>,
     pub rotation_exit_ratio: Option<f64>,
 }
@@ -64,7 +64,7 @@ impl LapComparison {
         self.lap_time - self.reference_time
     }
 
-    /// Virages triés du plus coûteux au plus rentable.
+    /// Corners sorted from most costly to most profitable.
     pub fn ranked(&self) -> Vec<&CornerComparison> {
         let mut v: Vec<_> = self.corners.iter().collect();
         v.sort_by(|a, b| b.time_delta.total_cmp(&a.time_delta));
@@ -72,7 +72,7 @@ impl LapComparison {
     }
 }
 
-/// Écart signé de positions, ramené dans [-0,5 ; 0,5) tour, en mètres.
+/// Signed position difference, wrapped into [-0.5, 0.5) lap, in meters.
 fn signed_m(a: f64, b: f64, length_m: f64) -> f64 {
     ((a - b + 0.5).rem_euclid(1.0) - 0.5) * length_m
 }
@@ -84,7 +84,7 @@ fn ratio(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     }
 }
 
-/// Référence préparée : alignée, découpée, métriques précalculées.
+/// Prepared reference: aligned, split, metrics precomputed.
 #[derive(Debug, Clone)]
 pub struct Analyzer {
     pub model: Arc<TrackModel>,
@@ -93,8 +93,8 @@ pub struct Analyzer {
 }
 
 impl Analyzer {
-    /// `track_length_m` : longueur connue (YAML iRacing) ; à défaut, distance
-    /// intégrée sur la référence.
+    /// `track_length_m`: known length (iRacing YAML); otherwise, distance
+    /// integrated over the reference.
     pub fn new(
         reference: &Lap,
         track_length_m: Option<f64>,
@@ -126,7 +126,7 @@ impl Analyzer {
         }
     }
 
-    /// Compare un tour complet à la référence.
+    /// Compares a complete lap to the reference.
     pub fn compare(&self, lap: &Lap) -> LapComparison {
         let aligned = AlignedLap::new(lap, self.reference.n);
         let l = self.model.length_m;
@@ -162,8 +162,8 @@ impl Analyzer {
         }
     }
 
-    /// Delta live : temps écoulé dans le tour en cours moins le temps de la
-    /// référence à la même position. Positif = en retard.
+    /// Live delta: time elapsed in the current lap minus the reference time at
+    /// the same position. Positive = behind.
     pub fn live_delta(&self, pct: f64, elapsed: f64) -> f64 {
         elapsed - self.reference.time_at(pct)
     }
@@ -227,15 +227,15 @@ mod tests {
             cmp.total_delta()
         );
         for c in &cmp.corners {
-            assert!(c.time_delta > 0.0, "{} : {}", c.label(), c.time_delta);
+            assert!(c.time_delta > 0.0, "{}: {}", c.label(), c.time_delta);
             assert!(
                 c.min_speed_delta < 0.0,
-                "{} : {}",
+                "{}: {}",
                 c.label(),
                 c.min_speed_delta
             );
         }
-        // Classement : le premier est le plus coûteux.
+        // Ranking: the first one is the most costly.
         let r = cmp.ranked();
         assert!(r.windows(2).all(|w| w[0].time_delta >= w[1].time_delta));
     }
@@ -247,7 +247,7 @@ mod tests {
         for c in &cmp.corners {
             assert!(c.time_delta.abs() < 0.01, "{} {}", c.label(), c.time_delta);
             if let Some(d) = c.brake_point_delta_m {
-                assert!(d.abs() < 3.0, "{} freinage {d}", c.label());
+                assert!(d.abs() < 3.0, "{} braking {d}", c.label());
             }
             if let Some(r) = c.rotation_entry_ratio {
                 assert!((r - 1.0).abs() < 0.02, "{} rotation {r}", c.label());
@@ -259,16 +259,16 @@ mod tests {
     fn slower_lap_brakes_earlier_and_reapplies_later() {
         let (_, a, lap) = setup(0.9);
         let cmp = a.compare(&lap);
-        // T4 : épingle de 40 m, gros freinage.
+        // T4: 40 m hairpin, heavy braking.
         let t4 = &cmp.corners[3];
         assert!(t4.reference.brake_point_pct.is_some());
         let d = t4.brake_point_delta_m.unwrap();
-        assert!(d < -5.0, "freinage {d} m");
+        assert!(d < -5.0, "braking {d} m");
         assert!(t4.lap.brake_peak > 0.5);
         assert!(t4.reference.throttle_on_pct.is_some());
     }
 
-    /// Rapports de rotation disponibles (entrée et sortie) de tous les virages.
+    /// Available rotation ratios (entry and exit) of all corners.
     fn rotation_ratios(cmp: &LapComparison) -> Vec<(String, f64)> {
         cmp.corners
             .iter()
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn more_steering_for_same_rotation_reads_as_understeer() {
         let (_, a, mut lap) = setup(1.0);
-        // Même trajectoire mais 30 % de braquage en plus : moins de rotation par degré.
+        // Same line but 30 % more steering: less rotation per degree.
         for s in &mut lap.samples {
             s.steering *= 1.3;
         }
@@ -292,14 +292,14 @@ mod tests {
         let ratios = rotation_ratios(&cmp);
         assert!(ratios.len() >= cmp.corners.len(), "{ratios:?}");
         for (label, r) in ratios {
-            assert!((r - 1.0 / 1.3).abs() < 0.03, "{label} : {r}");
+            assert!((r - 1.0 / 1.3).abs() < 0.03, "{label}: {r}");
         }
     }
 
     #[test]
     fn gps_estimated_reference_gives_neutral_rotation() {
-        // Référence CSV sans YawRate (estimé depuis Lat/Lon), tour mesuré identique :
-        // le lissage de l'estimation ne doit pas fausser les rapports.
+        // CSV reference without YawRate (estimated from Lat/Lon), identical measured
+        // lap: smoothing in the estimate must not skew the ratios.
         let track = SyntheticTrack::demo();
         let samples = track.simulate_lap(1.0, 0.0, 0.0);
         let cols = [
@@ -324,7 +324,7 @@ mod tests {
         let ratios = rotation_ratios(&cmp);
         assert!(!ratios.is_empty());
         for (label, ratio) in ratios {
-            assert!((ratio - 1.0).abs() < 0.1, "{label} : {ratio}");
+            assert!((ratio - 1.0).abs() < 0.1, "{label}: {ratio}");
         }
     }
 

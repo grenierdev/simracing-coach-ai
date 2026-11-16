@@ -1,25 +1,24 @@
-//! Moteur de consignes, exécuté à chaque échantillon (60 Hz).
+//! Trigger engine, run on every sample (60 Hz).
 //!
-//! Une consigne est « armée » quand la voiture franchit sa position et que sa
-//! condition est vraie. Elle est dite dès qu'un créneau se libère : personne ne
-//! parle, la voiture n'est pas en zone de silence, et la phrase a le temps
-//! d'être dite avant la prochaine zone de silence. Au-delà de son retard
-//! maximal, elle est abandonnée.
+//! A trigger is "armed" when the car crosses its position and its condition
+//! holds. It is spoken as soon as a slot opens: nobody is speaking, the car is
+//! not in a quiet zone, and the sentence has time to be spoken before the next
+//! quiet zone. Past its maximum delay, it is dropped.
 //!
-//! Règle dure : aucune parole en zone de freinage. Le moteur ne lance rien
-//! pendant un freinage (pédale au-dessus de 5 %) ni dans une zone de silence,
-//! et coupe la parole en cours s'il y entre.
+//! Hard rule: no speech in a braking zone. The engine starts nothing while
+//! braking (pedal above 5 %) or in a quiet zone, and cuts off the current
+//! speech if it enters one.
 
 use telemetry::Sample;
 
 use crate::plan::{QuietZone, Repeat, Trigger};
 
-/// Pression de frein au-dessus de laquelle on considère que le pilote freine.
+/// Brake pressure above which the driver is considered to be braking.
 pub const BRAKE_SILENCE: f32 = 0.05;
-/// Marge de sécurité entre la fin d'une phrase et la zone de silence, s.
+/// Safety margin between the end of a sentence and the quiet zone, s.
 const FIT_MARGIN_S: f64 = 0.4;
-/// Saut de position au-delà duquel on ne considère pas qu'une position a été
-/// franchie (téléportation, reset).
+/// Position jump beyond which a position is not considered crossed
+/// (teleport, reset).
 const MAX_STEP_PCT: f64 = 0.05;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,14 +56,14 @@ pub struct TriggerView {
     pub dropped: u32,
 }
 
-/// Informations du contexte fournies à chaque tick.
+/// Context information provided on each tick.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TickContext {
-    /// Delta live face à la référence, s.
+    /// Live delta to the reference, s.
     pub live_delta: Option<f64>,
-    /// Une phrase est en cours de lecture.
+    /// A sentence is currently playing.
     pub speaking: bool,
-    /// Longueur de piste, m (pour le calcul du temps disponible).
+    /// Track length, m (to compute the available time).
     pub track_length_m: f64,
 }
 
@@ -75,7 +74,7 @@ struct Slot {
     armed_lap: Option<i32>,
     expired: bool,
     dropped: u32,
-    /// Tour d'activation de la consigne (base de son expiration).
+    /// Lap on which the trigger was activated (basis for its expiry).
     base_lap: Option<i32>,
 }
 
@@ -89,7 +88,7 @@ pub struct TriggerEngine {
     quiet: Vec<QuietZone>,
     pending: Vec<Pending>,
     prev: Option<Sample>,
-    /// Consignes injectées à armer au prochain échantillon.
+    /// Injected triggers to arm on the next sample.
     to_arm: Vec<usize>,
     stop_sent: bool,
 }
@@ -98,7 +97,7 @@ fn forward(a: f64, b: f64) -> f64 {
     (b - a).rem_euclid(1.0)
 }
 
-/// `at` est-il franchi en passant de `prev` à `cur` (vers l'avant) ?
+/// Is `at` crossed when moving from `prev` to `cur` (forward)?
 fn crossed(prev: f64, cur: f64, at: f64) -> bool {
     let step = forward(prev, cur);
     step > 0.0 && step < MAX_STEP_PCT && forward(prev, at) > 0.0 && forward(prev, at) <= step
@@ -127,9 +126,9 @@ impl TriggerEngine {
         }
     }
 
-    /// Reprend l'état des consignes inchangées d'un moteur précédent (même id,
-    /// même texte, même position) : un plan mis à jour ne fait pas redire une
-    /// consigne « une fois » déjà dite, ni repartir son expiration.
+    /// Carries over the state of unchanged triggers from a previous engine (same
+    /// id, same text, same position): an updated plan does not repeat a "once"
+    /// trigger already spoken, nor restart its expiry.
     pub fn carry_state_from(&mut self, old: &TriggerEngine) {
         for slot in &mut self.slots {
             if let Some(o) = old.slots.iter().find(|o| {
@@ -148,8 +147,8 @@ impl TriggerEngine {
         self.prev = old.prev;
     }
 
-    /// Ajoute une consigne ponctuelle (dite une seule fois). `arm_now` : armée
-    /// tout de suite à la position courante, sinon au passage de `at_pct`.
+    /// Adds a one-off trigger (spoken only once). `arm_now`: armed right away at
+    /// the current position, otherwise when `at_pct` is crossed.
     pub fn inject(&mut self, mut trigger: Trigger, arm_now: bool) {
         trigger.repeat = Repeat::Once;
         self.slots.push(Slot {
@@ -174,7 +173,7 @@ impl TriggerEngine {
         self.quiet.iter().any(|z| z.contains(pct))
     }
 
-    /// Distance (pct) jusqu'au début de la prochaine zone de silence.
+    /// Distance (pct) to the start of the next quiet zone.
     fn distance_to_quiet(&self, pct: f64) -> f64 {
         self.quiet
             .iter()
@@ -215,7 +214,7 @@ impl TriggerEngine {
         }
     }
 
-    /// Un tick : `duration` donne la durée (s) d'une phrase une fois dite.
+    /// One tick: `duration` gives the duration (s) of a sentence once spoken.
     pub fn tick(
         &mut self,
         s: &Sample,
@@ -235,7 +234,7 @@ impl TriggerEngine {
             return out;
         }
 
-        // Expiration relative à l'activation de chaque consigne.
+        // Expiry relative to each trigger's activation.
         for slot in &mut self.slots {
             let base = *slot.base_lap.get_or_insert(s.lap);
             if let Some(n) = slot.trigger.expire_after_laps
@@ -245,7 +244,7 @@ impl TriggerEngine {
             }
         }
 
-        // Règle dure : silence au freinage et en zone de silence.
+        // Hard rule: silence while braking and in quiet zones.
         let braking = s.brake >= BRAKE_SILENCE;
         let quiet = self.in_quiet_zone(pct);
         if ctx.speaking && (braking || quiet) {
@@ -263,7 +262,7 @@ impl TriggerEngine {
             self.stop_sent = false;
         }
 
-        // Consignes injectées : armées à la position courante.
+        // Injected triggers: armed at the current position.
         for i in std::mem::take(&mut self.to_arm) {
             self.slots[i].armed_lap = Some(s.lap);
             self.pending.push(Pending {
@@ -272,7 +271,7 @@ impl TriggerEngine {
             });
         }
 
-        // Armement des consignes franchies.
+        // Arm crossed triggers.
         let prev_pct = prev.lap_dist_pct as f64;
         for i in 0..self.slots.len() {
             let slot = &self.slots[i];
@@ -292,7 +291,7 @@ impl TriggerEngine {
             });
         }
 
-        // Abandon des consignes trop en retard.
+        // Drop triggers that are too late.
         let slots = &mut self.slots;
         self.pending.retain(|p| {
             let keep = forward(p.armed_pct, pct) <= slots[p.slot].trigger.max_delay_pct;
@@ -302,7 +301,7 @@ impl TriggerEngine {
             keep
         });
 
-        // Créneau de parole.
+        // Speech slot.
         if ctx.speaking || braking || quiet || self.pending.is_empty() {
             return out;
         }
@@ -354,7 +353,7 @@ mod tests {
     fn trig(id: &str, at: f64, priority: u8) -> Trigger {
         Trigger {
             id: id.into(),
-            text: format!("consigne {id}"),
+            text: format!("trigger {id}"),
             at_pct: at,
             corner: None,
             priority,
@@ -377,8 +376,8 @@ mod tests {
         }
     }
 
-    /// Simulation : la voiture avance de `step` par tick sur `laps` tours.
-    /// La parole dure `speech_s` ; le freinage est actif dans `brake_zones`.
+    /// Simulation: the car advances by `step` per tick over `laps` laps.
+    /// Speech lasts `speech_s`; braking is active in `brake_zones`.
     struct Sim {
         engine: TriggerEngine,
         speaking_until: f64,
@@ -397,7 +396,7 @@ mod tests {
         }
 
         fn run(&mut self, laps: i32, speech_s: f64, brake_zones: &[(f64, f64)]) {
-            let step = 0.001; // 1000 ticks par tour, 1/60 s chacun
+            let step = 0.001; // 1000 ticks per lap, 1/60 s each
             for lap in 1..=laps {
                 for i in 0..1000 {
                     let pct = i as f64 * step;
@@ -460,19 +459,19 @@ mod tests {
 
     #[test]
     fn never_starts_speaking_while_braking() {
-        // Consigne placée en plein freinage : elle attend la fin du freinage.
+        // Trigger placed in the middle of braking: it waits for the end of braking.
         let mut t = trig("a", 0.40, 5);
         t.max_delay_pct = 0.10;
         let mut sim = Sim::new(TriggerEngine::new(vec![t], vec![]));
         sim.run(1, 1.0, &[(0.38, 0.45)]);
         let said = sim.said();
         assert_eq!(said.len(), 1);
-        assert!(said[0].1 > 0.45, "dite à {}", said[0].1);
+        assert!(said[0].1 > 0.45, "spoken at {}", said[0].1);
     }
 
     #[test]
     fn dropped_when_too_late() {
-        let t = trig("a", 0.40, 5); // retard max 5 %
+        let t = trig("a", 0.40, 5); // max delay 5 %
         let mut sim = Sim::new(TriggerEngine::new(vec![t], vec![]));
         sim.run(1, 1.0, &[(0.38, 0.50)]);
         assert!(sim.said().is_empty());
@@ -481,8 +480,8 @@ mod tests {
 
     #[test]
     fn waits_for_a_gap_long_enough_before_quiet_zone() {
-        // Zone de silence à 0,30 ; consigne à 0,27. À 50 m/s sur 3000 m, 0,03 tour
-        // = 90 m = 1,8 s : une phrase de 3 s ne tient pas, elle passe après la zone.
+        // Quiet zone at 0.30; trigger at 0.27. At 50 m/s on 3000 m, 0.03 lap
+        // = 90 m = 1.8 s: a 3 s sentence does not fit, it goes after the zone.
         let quiet = vec![QuietZone {
             start: 0.30,
             end: 0.35,
@@ -493,8 +492,8 @@ mod tests {
         sim.run(1, 3.0, &[]);
         let said = sim.said();
         assert_eq!(said.len(), 1);
-        assert!(said[0].1 > 0.35, "dite à {}", said[0].1);
-        // Une phrase courte (1 s) tient avant la zone.
+        assert!(said[0].1 > 0.35, "spoken at {}", said[0].1);
+        // A short sentence (1 s) fits before the zone.
         let mut short = trig("b", 0.27, 5);
         short.max_delay_pct = 0.2;
         let mut sim = Sim::new(TriggerEngine::new(
@@ -511,7 +510,7 @@ mod tests {
     #[test]
     fn stops_speech_when_braking_starts() {
         let mut sim = Sim::new(TriggerEngine::new(vec![trig("a", 0.10, 5)], vec![]));
-        // Phrase très longue (10 s) : le freinage à 0,15 la coupe.
+        // Very long sentence (10 s): braking at 0.15 cuts it off.
         sim.run(1, 10.0, &[(0.15, 0.20)]);
         let stops: Vec<_> = sim
             .log
@@ -531,9 +530,9 @@ mod tests {
 
     #[test]
     fn priority_wins_when_both_pending() {
-        // Deux consignes armées pendant qu'une phrase est en cours : la plus prioritaire passe d'abord.
+        // Two triggers armed while a sentence is playing: the higher priority one goes first.
         let mut first = trig("first", 0.10, 5);
-        first.text = "longue".into();
+        first.text = "long".into();
         let mut low = trig("low", 0.11, 1);
         low.max_delay_pct = 0.3;
         let mut high = trig("high", 0.12, 9);
@@ -547,7 +546,7 @@ mod tests {
     #[test]
     fn condition_gates_arming() {
         let mut t = trig("a", 0.5, 5);
-        t.condition = Some(Condition::DeltaAbove(1.0)); // delta simulé : 0,3 s
+        t.condition = Some(Condition::DeltaAbove(1.0)); // simulated delta: 0.3 s
         let mut u = trig("b", 0.6, 5);
         u.condition = Some(Condition::DeltaAbove(0.2));
         let mut sim = Sim::new(TriggerEngine::new(vec![t, u], vec![]));
@@ -571,7 +570,7 @@ mod tests {
         let mut injected = trig("say", f64::NAN, 9);
         injected.max_delay_pct = 0.3;
         let mut sim = Sim::new(engine);
-        // Un premier tour pour avoir un échantillon, puis injection pendant un freinage.
+        // A first lap to get a sample, then injection during braking.
         sim.run(1, 1.0, &[]);
         engine = std::mem::replace(&mut sim.engine, TriggerEngine::new(vec![], vec![]));
         engine.inject(injected, true);
@@ -579,7 +578,7 @@ mod tests {
         sim.run(1, 1.0, &[(0.0, 0.05)]);
         let said = sim.said();
         assert_eq!(said.len(), 1);
-        assert!(said[0].1 > 0.05, "dite à {}", said[0].1);
+        assert!(said[0].1 > 0.05, "spoken at {}", said[0].1);
         assert_eq!(sim.engine.views()[0].state, TriggerState::Expired);
     }
 
@@ -590,7 +589,7 @@ mod tests {
         let mut sim = Sim::new(TriggerEngine::new(vec![once.clone()], vec![]));
         sim.run(1, 1.0, &[]);
         assert_eq!(sim.said().len(), 1);
-        // Plan mis à jour : la même consigne plus une nouvelle.
+        // Updated plan: the same trigger plus a new one.
         let mut engine = TriggerEngine::new(vec![once, trig("new", 0.5, 5)], vec![]);
         engine.carry_state_from(&sim.engine);
         let mut sim2 = Sim::new(engine);
@@ -604,7 +603,7 @@ mod tests {
         assert!(crossed(0.998, 0.001, 0.0));
         assert!(crossed(0.998, 0.001, 0.999));
         assert!(!crossed(0.998, 0.001, 0.5));
-        assert!(!crossed(0.2, 0.6, 0.4), "téléportation");
+        assert!(!crossed(0.2, 0.6, 0.4), "teleport");
         assert!(!crossed(0.3, 0.3, 0.3));
     }
 }

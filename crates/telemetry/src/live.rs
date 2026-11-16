@@ -1,12 +1,12 @@
-//! Source live : mémoire partagée du SDK iRacing (Windows uniquement).
+//! Live source: iRacing SDK shared memory (Windows only).
 //!
-//! iRacing publie `Local\IRSDKMemMapFileName` (header, YAML, table des variables,
-//! jusqu'à 4 tampons rotatifs) et signale chaque nouvelle ligne via l'événement
-//! `Local\IRSDKDataValidEvent`, à 60 Hz.
+//! iRacing publishes `Local\IRSDKMemMapFileName` (header, YAML, variable table,
+//! up to 4 rotating buffers) and signals each new row via the event
+//! `Local\IRSDKDataValidEvent`, at 60 Hz.
 //!
-//! La mémoire est modifiée par iRacing pendant qu'on la lit : on ne forme jamais de
-//! `&[u8]` dessus, on copie avec `ptr::copy_nonoverlapping` puis on vérifie que le
-//! `tickCount` du tampon n'a pas changé pendant la copie.
+//! iRacing modifies the memory while we read it: we never form a `&[u8]` over
+//! it; we copy with `ptr::copy_nonoverlapping` then check that the buffer's
+//! `tickCount` did not change during the copy.
 
 use std::time::{Duration, Instant};
 
@@ -32,7 +32,7 @@ mod sys {
         view: MEMORY_MAPPED_VIEW_ADDRESS,
     }
 
-    // SAFETY : les handles Win32 et la vue sont utilisables depuis n'importe quel thread.
+    // SAFETY: the Win32 handles and the view are usable from any thread.
     unsafe impl Send for Mapping {}
 
     impl Mapping {
@@ -41,12 +41,12 @@ mod sys {
                 let map =
                     OpenFileMappingW(FILE_MAP_READ.0, false, w!("Local\\IRSDKMemMapFileName"))
                         .map_err(|e| {
-                            format!("mémoire partagée absente ({e}) — iRacing est-il lancé ?")
+                            format!("shared memory missing ({e}) — is iRacing running?")
                         })?;
                 let view = MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0);
                 if view.Value.is_null() {
                     let _ = CloseHandle(map);
-                    return Err("MapViewOfFile a échoué".into());
+                    return Err("MapViewOfFile failed".into());
                 }
                 let event = match OpenEventW(
                     SYNCHRONIZATION_SYNCHRONIZE,
@@ -57,22 +57,22 @@ mod sys {
                     Err(e) => {
                         let _ = UnmapViewOfFile(view);
                         let _ = CloseHandle(map);
-                        return Err(format!("événement de données absent ({e})"));
+                        return Err(format!("data event missing ({e})"));
                     }
                 };
                 Ok(Mapping { map, event, view })
             }
         }
 
-        /// Attend le signal « nouvelle ligne ». Retourne `false` sur délai dépassé.
+        /// Waits for the "new row" signal. Returns `false` on timeout.
         pub fn wait(&self, ms: u32) -> bool {
             unsafe { WaitForSingleObject(self.event, ms) == WAIT_OBJECT_0 }
         }
 
-        /// Copie `out.len()` octets depuis le décalage `offset` de la vue.
+        /// Copies `out.len()` bytes from offset `offset` of the view.
         ///
-        /// SAFETY : l'appelant garantit que `offset + out.len()` reste dans la vue
-        /// (bornes déduites du header iRacing).
+        /// SAFETY: the caller guarantees that `offset + out.len()` stays within the
+        /// view (bounds derived from the iRacing header).
         pub unsafe fn copy(&self, offset: usize, out: &mut [u8]) {
             unsafe {
                 let src = (self.view.Value as *const u8).add(offset);
@@ -98,13 +98,13 @@ mod sys {
 
     impl Mapping {
         pub fn open() -> Result<Self, String> {
-            Err("la télémétrie live n'existe que sous Windows ; utiliser le mode rejeu".into())
+            Err("live telemetry is only available on Windows; use replay mode".into())
         }
         pub fn wait(&self, _ms: u32) -> bool {
             false
         }
         /// # Safety
-        /// Jamais appelée hors Windows.
+        /// Never called outside Windows.
         pub unsafe fn copy(&self, _offset: usize, _out: &mut [u8]) {}
     }
 }
@@ -147,14 +147,14 @@ impl LiveSource {
 
     fn read_header(map: &sys::Mapping) -> Result<Header, SourceError> {
         let mut buf = [0u8; HEADER_LEN];
-        // SAFETY : le header fait toujours 112 octets en tête de la vue.
+        // SAFETY: the header is always 112 bytes at the start of the view.
         unsafe { map.copy(0, &mut buf) };
         Ok(Header::parse(&buf)?)
     }
 
     fn read_region(map: &sys::Mapping, offset: i32, len: usize) -> Vec<u8> {
         let mut v = vec![0u8; len];
-        // SAFETY : offset et len viennent du header iRacing, qui décrit la vue.
+        // SAFETY: offset and len come from the iRacing header, which describes the view.
         unsafe { map.copy(offset.max(0) as usize, &mut v) };
         v
     }
@@ -179,10 +179,10 @@ impl LiveSource {
         };
         let header = Self::read_header(&map)?;
         if !header.is_connected() {
-            self.last_error = Some("iRacing lancé mais aucune session active".into());
+            self.last_error = Some("iRacing running but no active session".into());
             return Ok(None);
         }
-        // La table des variables est lue via une copie couvrant [0, fin des varHeaders).
+        // The variable table is read via a copy covering [0, end of varHeaders).
         let vh_end = header.var_header_offset as usize
             + header.num_vars as usize * crate::irsdk::VAR_HEADER_LEN;
         let raw = Self::read_region(&map, 0, vh_end);
@@ -190,7 +190,7 @@ impl LiveSource {
         let missing = ChannelMap::missing_required(&vars);
         if !missing.is_empty() {
             return Err(SourceError::Unavailable(format!(
-                "canaux obligatoires absents : {missing:?}"
+                "required channels missing: {missing:?}"
             )));
         }
         let session = Self::read_session_info(&map, &header);
@@ -213,7 +213,7 @@ impl TelemetrySource for LiveSource {
             return Ok(Some(ev));
         }
         let Some(conn) = self.conn.as_mut() else {
-            // Pas plus d'une tentative de connexion par seconde.
+            // No more than one connection attempt per second.
             if self
                 .last_attempt
                 .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
@@ -233,7 +233,7 @@ impl TelemetrySource for LiveSource {
             return Ok(Some(SourceEvent::Disconnected));
         }
         if header.num_vars != conn.header.num_vars || header.buf_len != conn.header.buf_len {
-            // Structure changée (nouvelle session iRacing) : reconnexion complète.
+            // Structure changed (new iRacing session): full reconnection.
             self.conn = None;
             self.last_attempt = None;
             return Ok(Some(SourceEvent::Disconnected));
@@ -243,9 +243,9 @@ impl TelemetrySource for LiveSource {
         if latest.tick_count == conn.last_tick {
             return Ok(None);
         }
-        // Copie puis vérification que le tampon n'a pas été réécrit pendant la copie.
+        // Copy, then check that the buffer was not rewritten during the copy.
         for _ in 0..3 {
-            // SAFETY : bufOffset + bufLen décrit un tampon de la vue.
+            // SAFETY: bufOffset + bufLen describes a buffer of the view.
             unsafe {
                 conn.map
                     .copy(latest.buf_offset.max(0) as usize, &mut conn.row)
@@ -267,7 +267,7 @@ impl TelemetrySource for LiveSource {
                 return Ok(Some(SourceEvent::Sample(sample)));
             }
         }
-        // Trois copies déchirées de suite : on saute ce tick.
+        // Three torn copies in a row: skip this tick.
         Ok(None)
     }
 

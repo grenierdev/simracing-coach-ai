@@ -1,20 +1,20 @@
-//! Découpage du flux d'échantillons en tours et historique des N derniers tours.
+//! Splitting of the sample stream into laps and history of the last N laps.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::sample::{Sample, TrackSurface};
 
-/// Raisons pour lesquelles un tour n'est pas exploitable comme comparaison.
+/// Reasons why a lap is not usable for comparison.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LapFlags {
-    /// Le tour a commencé et fini sur la ligne (pas un tour de sortie partiel).
+    /// The lap started and ended on the line (not a partial out lap).
     pub complete: bool,
-    /// Passage par la voie des stands.
+    /// Went through the pit lane.
     pub pit: bool,
-    /// Nombre de sorties de piste (passages à `OffTrack`).
+    /// Number of track excursions (transitions to `OffTrack`).
     pub off_track: u32,
-    /// Téléportation, reset, recul, pause ou trou dans les données.
+    /// Teleport, reset, backward motion, pause or gap in the data.
     pub discontinuity: bool,
 }
 
@@ -26,12 +26,12 @@ impl LapFlags {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lap {
-    /// Numéro iRacing (`Lap`).
+    /// iRacing number (`Lap`).
     pub number: i32,
-    /// Temps de session au passage de la ligne (interpolé).
+    /// Session time when crossing the line (interpolated).
     pub start_time: f64,
-    /// Temps au tour, s (interpolé entre les deux échantillons encadrant la ligne).
-    /// Pour un tour incomplet : durée couverte.
+    /// Lap time, s (interpolated between the two samples around the line).
+    /// For an incomplete lap: duration covered.
     pub lap_time: f64,
     pub flags: LapFlags,
     pub samples: Vec<Sample>,
@@ -45,12 +45,12 @@ impl Lap {
 
 #[derive(Debug, Clone, Copy)]
 pub struct LapRecorderConfig {
-    /// Nombre de tours conservés.
+    /// Number of laps kept.
     pub history: usize,
-    /// Saut de `LapDistPct` entre deux échantillons au-delà duquel on considère
-    /// une téléportation.
+    /// `LapDistPct` jump between two samples beyond which it is considered a
+    /// teleport.
     pub max_pct_jump: f32,
-    /// Trou de `SessionTime` au-delà duquel on considère une discontinuité, s.
+    /// `SessionTime` gap beyond which it is considered a discontinuity, s.
     pub max_time_gap: f64,
 }
 
@@ -102,8 +102,8 @@ impl LapBuilder {
     }
 
     fn finish(self, end_time: f64) -> Lap {
-        // Numéro du tour : valeur de `Lap` au milieu du tour, insensible au retard
-        // d'un tick d'iRacing au passage de la ligne.
+        // Lap number: value of `Lap` at mid-lap, unaffected by iRacing's one-tick
+        // lag when crossing the line.
         let number = self
             .samples
             .get(self.samples.len() / 2)
@@ -119,11 +119,11 @@ impl LapBuilder {
     }
 }
 
-/// Événement produit par [`LapRecorder::push`].
+/// Event produced by [`LapRecorder::push`].
 #[derive(Debug, Clone)]
 pub enum LapEvent {
     Completed(Arc<Lap>),
-    /// Tour abandonné (voiture retirée de la piste, reset au garage).
+    /// Lap aborted (car removed from the track, reset to garage).
     Aborted,
 }
 
@@ -150,7 +150,7 @@ impl LapRecorder {
         }
     }
 
-    /// Oublie le tour en cours et l'historique (nouvelle session).
+    /// Forgets the current lap and the history (new session).
     pub fn reset(&mut self) {
         self.current = None;
         self.prev = None;
@@ -172,7 +172,7 @@ impl LapRecorder {
             .min_by(|a, b| a.lap_time.total_cmp(&b.lap_time))
     }
 
-    /// Temps écoulé dans le tour en cours, s.
+    /// Time elapsed in the current lap, s.
     pub fn current_lap_elapsed(&self) -> Option<f64> {
         let cur = self.current.as_ref()?;
         let last = cur.samples.last()?;
@@ -189,7 +189,7 @@ impl LapRecorder {
             return self.current.take().map(|_| LapEvent::Aborted);
         }
         let Some(prev) = self.prev.replace(s) else {
-            // Premier échantillon en piste : tour partiel jusqu'à la ligne.
+            // First sample on track: partial lap up to the line.
             let mut b = LapBuilder::new(s.session_time, false);
             b.push(s);
             self.current = Some(b);
@@ -198,7 +198,7 @@ impl LapRecorder {
 
         let dt = s.session_time - prev.session_time;
         if dt <= 0.0 {
-            // Doublon ou retour en arrière du temps (rejeu relancé) : on ignore.
+            // Duplicate or time going backward (replay restarted): ignore.
             if dt < 0.0 {
                 self.prev = None;
                 return self.current.take().map(|_| LapEvent::Aborted);
@@ -210,7 +210,7 @@ impl LapRecorder {
         let crossed = prev.lap_dist_pct > 0.9 && s.lap_dist_pct < 0.1;
         let mut event = None;
         if crossed {
-            // Interpolation linéaire de l'instant de passage de la ligne.
+            // Linear interpolation of the line crossing time.
             let before = 1.0 - prev.lap_dist_pct as f64;
             let after = s.lap_dist_pct as f64;
             let frac = if before + after > 0.0 {
@@ -265,7 +265,7 @@ mod tests {
         }
     }
 
-    /// Tours de `period` secondes à 60 Hz, départ à `start_pct`.
+    /// Laps of `period` seconds at 60 Hz, starting at `start_pct`.
     fn drive(rec: &mut LapRecorder, start_pct: f64, seconds: f64, period: f64) -> Vec<Arc<Lap>> {
         let mut laps = vec![];
         let n = (seconds * 60.0) as usize;
@@ -284,13 +284,13 @@ mod tests {
     fn splits_laps_and_interpolates_time() {
         let mut rec = LapRecorder::default();
         let laps = drive(&mut rec, 0.5, 320.0, 90.0);
-        // Départ à mi-tour : un tour partiel puis trois tours complets en 320 s.
+        // Start at mid-lap: one partial lap then three complete laps in 320 s.
         assert_eq!(laps.len(), 4);
         assert!(!laps[0].flags.complete);
         assert!((laps[0].lap_time - 45.0).abs() < 0.05);
         for l in &laps[1..] {
             assert!(l.is_valid(), "{:?}", l.flags);
-            assert!((l.lap_time - 90.0).abs() < 1e-3, "temps {}", l.lap_time);
+            assert!((l.lap_time - 90.0).abs() < 1e-3, "time {}", l.lap_time);
         }
         assert_eq!(laps[1].number, 2);
         assert_eq!(laps[3].number, 4);
@@ -321,9 +321,9 @@ mod tests {
         };
         push(0.95, &mut rec);
         push(0.99, &mut rec);
-        push(0.01, &mut rec); // ligne : début d'un tour complet
+        push(0.01, &mut rec); // line: start of a complete lap
         push(0.02, &mut rec);
-        push(0.40, &mut rec); // saut : reset / remorquage
+        push(0.40, &mut rec); // jump: reset / tow
         for i in 0..60 {
             push(0.40 + i as f32 * 0.01, &mut rec);
         }

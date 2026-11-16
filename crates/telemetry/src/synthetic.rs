@@ -1,8 +1,8 @@
-//! Piste et télémétrie synthétiques : tests, démonstration et développement sans iRacing.
+//! Synthetic track and telemetry: tests, demo and development without iRacing.
 //!
-//! Une piste est une suite de lignes droites et d'arcs. Le profil de vitesse est
-//! limité par l'adhérence latérale en virage et par les capacités d'accélération
-//! et de freinage (passes avant et arrière, comme un calcul de temps au tour simple).
+//! A track is a sequence of straights and arcs. The speed profile is limited by
+//! lateral grip in corners and by acceleration and braking capability (forward
+//! and backward passes, like a simple lap time calculation).
 
 use crate::corners::Direction;
 use crate::ibt::{IbtWriter, Value};
@@ -25,7 +25,7 @@ impl TrackSegment {
         }
     }
 
-    /// Courbure signée (positive à gauche), 1/m.
+    /// Signed curvature (positive to the left), 1/m.
     fn curvature(&self) -> f64 {
         match *self {
             TrackSegment::Straight(_) => 0.0,
@@ -42,7 +42,7 @@ const A_BRAKE: f64 = 16.0;
 const WHEELBASE: f64 = 2.7;
 const STEERING_RATIO: f64 = 13.0;
 
-/// Générateur pseudo-aléatoire déterministe (LCG), pour des données reproductibles.
+/// Deterministic pseudo-random generator (LCG), for reproducible data.
 #[derive(Debug, Clone)]
 pub struct Lcg(u64);
 
@@ -52,7 +52,7 @@ impl Lcg {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407))
     }
-    /// Uniforme dans [-1, 1].
+    /// Uniform in [-1, 1].
     pub fn next_signed(&mut self) -> f64 {
         self.0 = self
             .0
@@ -65,7 +65,7 @@ impl Lcg {
 #[derive(Debug, Clone)]
 pub struct SyntheticTrack {
     segments: Vec<TrackSegment>,
-    /// Courbure à chaque pas de `DS` mètres.
+    /// Curvature at each `DS` meter step.
     kappa: Vec<f64>,
     x: Vec<f64>,
     y: Vec<f64>,
@@ -96,7 +96,7 @@ impl SyntheticTrack {
         }
     }
 
-    /// Piste de démonstration de ~2,9 km (tour en ~55 s), six virages : D, G, D, D, D, D.
+    /// ~2.9 km demo track (~55 s lap), six corners: R, L, R, R, R, R.
     pub fn demo() -> Self {
         use TrackSegment::*;
         Self::new(vec![
@@ -137,7 +137,7 @@ impl SyntheticTrack {
         self.kappa.len() as f64 * DS
     }
 
-    /// Virages attendus : (sens, pct du milieu de l'arc).
+    /// Expected corners: (direction, pct of the arc midpoint).
     pub fn expected_corners(&self) -> Vec<(Direction, f64)> {
         let total = self.length_m();
         let mut d = 0.0;
@@ -154,7 +154,7 @@ impl SyntheticTrack {
         out
     }
 
-    /// Profil de vitesse (m/s) à chaque pas, pour un rythme `pace` (1.0 = limite).
+    /// Speed profile (m/s) at each step, for a `pace` (1.0 = limit).
     fn speed_profile(&self, pace: f64) -> Vec<f64> {
         let n = self.kappa.len();
         let a_lat = A_LAT * pace * pace;
@@ -171,7 +171,7 @@ impl SyntheticTrack {
             .collect();
         let mut v = vlim.clone();
         let a_acc = |v: f64| (9.0 * (1.0 - v / (V_MAX * 1.05))).max(0.3);
-        // Deux tours de passe avant puis arrière : le profil boucle.
+        // Two rounds of forward then backward passes: the profile loops.
         for _ in 0..2 {
             for i in 0..n {
                 let prev = v[(i + n - 1) % n];
@@ -189,8 +189,8 @@ impl SyntheticTrack {
         v
     }
 
-    /// Simule un tour complet à 60 Hz, de pct 0 à pct 1.
-    /// `t0` : `SessionTime` du premier échantillon ; `noise` : bruit sur `YawRate` (rad/s).
+    /// Simulates a complete lap at 60 Hz, from pct 0 to pct 1.
+    /// `t0`: `SessionTime` of the first sample; `noise`: noise on `YawRate` (rad/s).
     pub fn simulate_lap(&self, pace: f64, t0: f64, noise: f64) -> Vec<Sample> {
         self.simulate_lap_seeded(pace, t0, noise, 1)
     }
@@ -199,7 +199,7 @@ impl SyntheticTrack {
         let n = self.kappa.len();
         let v = self.speed_profile(pace);
         let total = self.length_m();
-        // Temps cumulé à chaque pas.
+        // Cumulative time at each step.
         let mut t = Vec::with_capacity(n + 1);
         t.push(0.0);
         for i in 0..n {
@@ -223,7 +223,7 @@ impl SyntheticTrack {
             let d = (j as f64 + frac) * DS;
             let speed = v[j] + (v[(j + 1) % n] - v[j]) * frac;
             let kap = self.kappa[j];
-            // Accélération longitudinale : dv/dt = v · dv/ds.
+            // Longitudinal acceleration: dv/dt = v · dv/ds.
             let dvds = (v[(j + 1) % n] - v[j]) / DS;
             let long_accel = speed * dvds;
             let (throttle, brake) = if long_accel < -2.0 {
@@ -273,11 +273,11 @@ impl SyntheticTrack {
         out
     }
 
-    /// Session complète : fin de tour de sortie (depuis pct 0,7) puis `laps` tours
-    /// à rythme variable. Rejouable comme un .ibt.
+    /// Full session: end of an out lap (from pct 0.7) then `laps` laps at
+    /// varying pace. Replayable as an .ibt.
     pub fn session_ibt(&self, laps: usize, seed: u64) -> IbtWriter {
         let yaml = format!(
-            "---\nWeekendInfo:\n TrackName: synthetic\n TrackID: 0\n TrackLength: {:.2} km\n TrackDisplayName: Circuit synthétique\n TrackConfigName: Démo\nDriverInfo:\n DriverCarIdx: 0\n Drivers:\n - CarIdx: 0\n   UserName: Pilote\n   CarScreenName: Voiture synthétique\n",
+            "---\nWeekendInfo:\n TrackName: synthetic\n TrackID: 0\n TrackLength: {:.2} km\n TrackDisplayName: Synthetic Circuit\n TrackConfigName: Demo\nDriverInfo:\n DriverCarIdx: 0\n Drivers:\n - CarIdx: 0\n   UserName: Driver\n   CarScreenName: Synthetic car\n",
             self.length_m() / 1000.0
         );
         let mut w = IbtWriter::new(SYNTHETIC_CHANNELS, &yaml, 60);
@@ -332,7 +332,7 @@ impl SyntheticTrack {
     }
 }
 
-/// Canaux écrits par [`SyntheticTrack::session_ibt`], noms et types iRacing.
+/// Channels written by [`SyntheticTrack::session_ibt`], iRacing names and types.
 pub const SYNTHETIC_CHANNELS: &[(&str, VarType, &str)] = &[
     ("SessionTime", VarType::Double, "s"),
     ("SessionTick", VarType::Int, ""),

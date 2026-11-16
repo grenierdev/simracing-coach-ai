@@ -1,51 +1,51 @@
-//! Métriques d'un tour aligné dans la zone d'un virage.
+//! Metrics of an aligned lap within a corner zone.
 
 use telemetry::Corner;
 
 use crate::align::AlignedLap;
 use crate::zones::CornerZone;
 
-/// Seuils de détection sur les pédales (0..1).
+/// Pedal detection thresholds (0..1).
 pub const BRAKE_ON: f64 = 0.10;
 pub const BRAKE_OFF: f64 = 0.05;
 pub const THROTTLE_ON: f64 = 0.20;
 pub const THROTTLE_FULL: f64 = 0.95;
 pub const PEDAL_IDLE: f64 = 0.05;
-/// Angle de volant sous lequel le rapport de rotation n'est pas calculé, rad.
+/// Steering angle below which the rotation ratio is not computed, rad.
 const MIN_STEER: f64 = 0.03;
 const MIN_SPEED: f64 = 10.0;
-/// Marge retirée à chaque bord du cœur du virage pour la rotation, m.
+/// Margin trimmed from each edge of the corner core for rotation, m.
 const CORE_TRIM_M: f64 = 15.0;
-/// Nombre minimal de points pour une médiane de rotation.
+/// Minimum number of points for a rotation median.
 const MIN_ROTATION_POINTS: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CornerMetrics {
-    /// Temps passé dans la zone du virage, s.
+    /// Time spent in the corner zone, s.
     pub zone_time: f64,
-    /// Début du freinage, pct. `None` : virage sans frein.
+    /// Start of braking, pct. `None`: corner without braking.
     pub brake_point_pct: Option<f64>,
-    /// Pression de frein maximale, 0..1.
+    /// Maximum brake pressure, 0..1.
     pub brake_peak: f64,
-    /// Relâchement complet du frein, pct.
+    /// Full brake release, pct.
     pub brake_release_pct: Option<f64>,
-    /// Distance freinée après le début du virage (trail braking), m.
+    /// Distance braked after the start of the corner (trail braking), m.
     pub trail_brake_m: f64,
-    /// Vitesse minimale, m/s, et sa position (pct).
+    /// Minimum speed, m/s, and its position (pct).
     pub min_speed: f64,
     pub min_speed_pct: f64,
-    /// Reprise des gaz (passage au-dessus de 20 %), pct. `None` : virage à fond.
+    /// Throttle pickup (crossing above 20 %), pct. `None`: flat-out corner.
     pub throttle_on_pct: Option<f64>,
-    /// Pleins gaz (au-dessus de 95 %) après la reprise, pct.
+    /// Full throttle (above 95 %) after the pickup, pct.
     pub full_throttle_pct: Option<f64>,
-    /// Temps sans frein ni gaz dans la zone, s.
+    /// Time with neither brake nor throttle in the zone, s.
     pub coasting_s: f64,
-    /// Accélération latérale maximale dans le virage, m/s².
+    /// Maximum lateral acceleration in the corner, m/s².
     pub peak_lat_accel: f64,
-    /// Rotation obtenue par unité de braquage, `YawRate / (Speed × volant)`,
-    /// médiane sur l'entrée (début → vitesse mini) et la sortie (vitesse mini → fin).
-    /// À comparer à la référence : un rapport plus faible = moins de rotation pour
-    /// le même braquage (sous-virage), plus fort = plus de rotation (survirage).
+    /// Rotation obtained per unit of steering, `YawRate / (Speed × steering)`,
+    /// median over the entry (start → minimum speed) and the exit (minimum speed → end).
+    /// To compare with the reference: a lower ratio = less rotation for the
+    /// same steering (understeer), higher = more rotation (oversteer).
     pub rotation_entry: Option<f64>,
     pub rotation_exit: Option<f64>,
 }
@@ -58,11 +58,11 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
     Some(v[v.len() / 2])
 }
 
-/// Position (indice dans `idx`) de l'indice de grille le plus proche de `pct`.
+/// Position (index in `idx`) of the grid index closest to `pct`.
 fn position_of(idx: &[usize], n: usize, pct: f64) -> usize {
     let target = ((pct.rem_euclid(1.0) * n as f64).round() as usize) % n;
     idx.iter().position(|&i| i == target).unwrap_or_else(|| {
-        // Hors zone (ne devrait pas arriver) : point le plus proche.
+        // Outside the zone (should not happen): closest point.
         idx.iter()
             .enumerate()
             .min_by_key(|(_, i)| {
@@ -86,13 +86,13 @@ pub fn corner_metrics(lap: &AlignedLap, zone: &CornerZone, length_m: f64) -> Cor
     let k_cend = position_of(&idx, n, corner.end_pct).max(k_turn);
     let last = idx.len() - 1;
 
-    // Vitesse minimale dans le virage.
+    // Minimum speed in the corner.
     let k_min = (k_turn..=k_cend)
         .filter(|&k| val(&lap.speed, k).is_finite())
         .min_by(|&a, &b| val(&lap.speed, a).total_cmp(&val(&lap.speed, b)))
         .unwrap_or(k_turn);
 
-    // Freinage : premier appui depuis le début de zone jusqu'à la vitesse mini.
+    // Braking: first press from the zone start up to the minimum speed.
     let k_brake = (0..=k_min).find(|&k| val(&lap.brake, k) >= BRAKE_ON);
     let k_release = k_brake.map(|kb| {
         (kb..=last)
@@ -111,8 +111,8 @@ pub fn corner_metrics(lap: &AlignedLap, zone: &CornerZone, length_m: f64) -> Cor
         _ => 0.0,
     };
 
-    // Reprise des gaz : après le point le plus bas de l'accélérateur dans le
-    // virage, dernier passage sous 20 % puis premier retour au-dessus.
+    // Throttle pickup: after the lowest throttle point in the corner, last
+    // drop below 20 % then first return above it.
     let k_from = k_brake.unwrap_or(0);
     let k_low = (k_from..=k_cend)
         .min_by(|&a, &b| val(&lap.throttle, a).total_cmp(&val(&lap.throttle, b)))
@@ -136,7 +136,7 @@ pub fn corner_metrics(lap: &AlignedLap, zone: &CornerZone, length_m: f64) -> Cor
         }
     };
 
-    // Roue libre : ni frein ni gaz, en roulant.
+    // Coasting: neither brake nor throttle, while moving.
     let coasting_s = (0..last)
         .filter(|&k| {
             val(&lap.throttle, k) < PEDAL_IDLE
@@ -145,7 +145,7 @@ pub fn corner_metrics(lap: &AlignedLap, zone: &CornerZone, length_m: f64) -> Cor
         })
         .map(|k| lap.duration(idx[k], idx[k + 1]))
         .sum::<f64>()
-        // La somme vide de f64 vaut -0.0 en Rust : on normalise.
+        // An empty f64 sum is -0.0 in Rust: normalize.
         + 0.0;
 
     let peak_lat_accel = (k_turn..=k_cend)
@@ -153,23 +153,23 @@ pub fn corner_metrics(lap: &AlignedLap, zone: &CornerZone, length_m: f64) -> Cor
         .filter(|x| x.is_finite())
         .fold(0.0, f64::max);
 
-    // Rotation : seulement au cœur du virage (au moins la moitié du braquage
-    // maximal). Aux bords, volant et lacet varient vite et un `YawRate` estimé
-    // (lissé, donc en retard) fausserait le rapport.
+    // Rotation: only in the core of the corner (at least half of the maximum
+    // steering). At the edges, steering and yaw change quickly and an estimated
+    // `YawRate` (smoothed, hence lagging) would skew the ratio.
     let peak_steer = (k_turn..=k_cend)
         .map(|k| val(&lap.steering, k).abs())
         .filter(|x| x.is_finite())
         .fold(0.0, f64::max);
     let steer_floor = MIN_STEER.max(0.5 * peak_steer);
-    // On retire aussi une marge aux deux bords de ce cœur, de l'ordre de la
-    // fenêtre de lissage d'un `YawRate` estimé par GPS.
+    // Also trim a margin at both edges of this core, on the order of the
+    // smoothing window of a GPS-estimated `YawRate`.
     let trim = (CORE_TRIM_M / step_m).round() as usize;
     let core: Vec<usize> = (k_turn..=k_cend)
         .filter(|&k| val(&lap.steering, k).abs() >= steer_floor)
         .collect();
     let (core_lo, core_hi) = match (core.first(), core.last()) {
         (Some(&a), Some(&b)) if b > a + 2 * trim => (a + trim, b - trim),
-        _ => (1, 0), // cœur trop court : pas de mesure
+        _ => (1, 0), // core too short: no measurement
     };
     let rotation = |range: std::ops::RangeInclusive<usize>| {
         let (lo, hi) = ((*range.start()).max(core_lo), (*range.end()).min(core_hi));

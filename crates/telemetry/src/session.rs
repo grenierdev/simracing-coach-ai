@@ -1,7 +1,7 @@
-//! Extraction minimale des informations de session (YAML iRacing).
+//! Minimal extraction of session information (iRacing YAML).
 //!
-//! Le YAML d'iRacing n'est pas toujours valide (noms non échappés), d'où une
-//! lecture ligne à ligne des quelques clés utiles plutôt qu'un parseur complet.
+//! iRacing's YAML is not always valid (unescaped names), hence a line-by-line
+//! read of the few useful keys rather than a full parser.
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionInfo {
@@ -9,7 +9,7 @@ pub struct SessionInfo {
     pub track_name: String,
     pub track_display_name: String,
     pub track_config: String,
-    /// Longueur de piste, m.
+    /// Track length, m.
     pub track_length_m: Option<f64>,
     pub car_screen_name: String,
     pub driver_car_idx: Option<i64>,
@@ -59,7 +59,7 @@ impl SessionInfo {
                 s.driver_car_idx = v.parse().ok();
             }
         }
-        // Deuxième passe : nom de la voiture du joueur dans la liste des pilotes.
+        // Second pass: player's car name in the driver list.
         if let Some(idx) = s.driver_car_idx {
             let mut in_player = false;
             for line in yaml.lines() {
@@ -103,7 +103,7 @@ DriverInfo:
  - CarIdx: 0
    CarScreenName: Pace Car
  - CarIdx: 1
-   UserName: Pilote Test
+   UserName: Test Driver
    CarScreenName: Porsche 911 GT3 R (992)
 ";
 

@@ -1,8 +1,8 @@
-//! Échantillon de télémétrie décodé : les canaux utiles au coaching.
+//! Decoded telemetry sample: the channels useful for coaching.
 
 use crate::irsdk::{VarHeader, VarTable, read_value};
 
-/// Surface sous la voiture (`irsdk_TrkLoc`).
+/// Surface under the car (`irsdk_TrkLoc`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TrackSurface {
     #[default]
@@ -35,21 +35,21 @@ impl TrackSurface {
     }
 }
 
-/// Un échantillon à 60 Hz. Unités SI, comme iRacing.
-/// Les canaux absents de la source valent `NaN` (flottants) ou leur défaut.
+/// One sample at 60 Hz. SI units, like iRacing.
+/// Channels missing from the source are `NaN` (floats) or their default.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Sample {
     /// `SessionTime`, s.
     pub session_time: f64,
     /// `SessionTick`.
     pub tick: i32,
-    /// `Lap` : numéro du tour en cours.
+    /// `Lap`: current lap number.
     pub lap: i32,
-    /// `LapDistPct` : 0..1 depuis la ligne de départ.
+    /// `LapDistPct`: 0..1 from the start line.
     pub lap_dist_pct: f32,
     /// `LapDist`, m.
     pub lap_dist: f32,
-    /// `LapCurrentLapTime`, s (estimation iRacing).
+    /// `LapCurrentLapTime`, s (iRacing estimate).
     pub lap_current_time: f32,
     /// `LapLastLapTime`, s.
     pub lap_last_time: f32,
@@ -59,13 +59,13 @@ pub struct Sample {
     pub throttle: f32,
     /// `Brake`, 0..1.
     pub brake: f32,
-    /// `Clutch`, 0..1 (1 = embrayage relâché chez iRacing).
+    /// `Clutch`, 0..1 (1 = clutch released in iRacing).
     pub clutch: f32,
-    /// `Gear` : -1 marche arrière, 0 point mort.
+    /// `Gear`: -1 reverse, 0 neutral.
     pub gear: i32,
     /// `RPM`.
     pub rpm: f32,
-    /// `SteeringWheelAngle`, rad, positif à gauche.
+    /// `SteeringWheelAngle`, rad, positive to the left.
     pub steering: f32,
     /// `YawRate`, rad/s.
     pub yaw_rate: f32,
@@ -73,11 +73,11 @@ pub struct Sample {
     pub lat_accel: f32,
     /// `LongAccel`, m/s².
     pub long_accel: f32,
-    /// `Lat`, degrés (souvent présent seulement dans les .ibt).
+    /// `Lat`, degrees (often present only in .ibt files).
     pub lat: f64,
-    /// `Lon`, degrés.
+    /// `Lon`, degrees.
     pub lon: f64,
-    /// `IsOnTrack` (ou `IsOnTrackCar` en .ibt).
+    /// `IsOnTrack` (or `IsOnTrackCar` in .ibt).
     pub is_on_track: bool,
     /// `OnPitRoad`.
     pub on_pit_road: bool,
@@ -85,8 +85,8 @@ pub struct Sample {
     pub surface: TrackSurface,
 }
 
-/// Correspondance entre les champs de [`Sample`] et les variables de la source.
-/// Résolue une fois par connexion (la table de variables ne change pas en cours de session).
+/// Mapping between [`Sample`] fields and source variables.
+/// Resolved once per connection (the variable table does not change during a session).
 #[derive(Debug, Clone, Default)]
 pub struct ChannelMap {
     session_time: Option<VarHeader>,
@@ -113,7 +113,7 @@ pub struct ChannelMap {
     surface: Option<VarHeader>,
 }
 
-/// Canaux sans lesquels le découpage en tours est impossible.
+/// Channels without which lap splitting is impossible.
 pub const REQUIRED_CHANNELS: &[&str] = &["SessionTime", "Lap", "LapDistPct", "Speed"];
 
 impl ChannelMap {
@@ -145,7 +145,7 @@ impl ChannelMap {
         }
     }
 
-    /// Noms des canaux obligatoires absents.
+    /// Names of missing required channels.
     pub fn missing_required(table: &VarTable) -> Vec<&'static str> {
         REQUIRED_CHANNELS
             .iter()

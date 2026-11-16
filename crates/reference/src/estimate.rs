@@ -1,17 +1,17 @@
-//! Estimation des canaux de rotation absents d'un export.
+//! Estimation of rotation channels missing from an export.
 //!
-//! Ordre de préférence pour `YawRate` :
-//! 1. dérivée temporelle de `Yaw` (cap), déroulé ;
-//! 2. variation du cap de la trajectoire calculé depuis `Lat`/`Lon`.
+//! Order of preference for `YawRate`:
+//! 1. time derivative of `Yaw` (heading), unwrapped;
+//! 2. change in the path heading computed from `Lat`/`Lon`.
 //!
-//! `LatAccel` est ensuite estimé par `YawRate × Speed` (accélération centripète,
-//! sans dérive, dévers ni gravité). Positif = vers la gauche, comme `YawRate`.
+//! `LatAccel` is then estimated as `YawRate × Speed` (centripetal acceleration,
+//! without slip, banking or gravity). Positive = to the left, like `YawRate`.
 
 use telemetry::Sample;
 
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 
-/// Moyenne glissante centrée (bords tronqués), qui ignore les valeurs non finies.
+/// Centered moving average (truncated edges), ignoring non-finite values.
 pub fn smooth(v: &[f64], half: usize) -> Vec<f64> {
     (0..v.len())
         .map(|i| {
@@ -26,7 +26,7 @@ pub fn smooth(v: &[f64], half: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Déroule un angle (rad) : supprime les sauts de ±2π.
+/// Unwraps an angle (rad): removes ±2π jumps.
 pub fn unwrap_angle(v: &[f64]) -> Vec<f64> {
     let mut out = Vec::with_capacity(v.len());
     let mut offset = 0.0;
@@ -46,7 +46,7 @@ pub fn unwrap_angle(v: &[f64]) -> Vec<f64> {
     out
 }
 
-/// Dérivée centrée de `v` par rapport au temps des échantillons.
+/// Centered derivative of `v` with respect to sample time.
 fn time_derivative(samples: &[Sample], v: &[f64]) -> Vec<f64> {
     let n = v.len();
     (0..n)
@@ -62,14 +62,14 @@ fn time_derivative(samples: &[Sample], v: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-/// `YawRate` depuis le canal `Yaw` (rad, cap absolu).
+/// `YawRate` from the `Yaw` channel (rad, absolute heading).
 pub fn yaw_rate_from_yaw(samples: &[Sample], yaw: &[f64]) -> Vec<f64> {
     let unwrapped = unwrap_angle(yaw);
     smooth(&time_derivative(samples, &unwrapped), 4)
 }
 
-/// `YawRate` depuis la trajectoire GPS : cap de la corde entre deux points
-/// distants d'environ `span_m`, dérivé dans le temps.
+/// `YawRate` from the GPS path: heading of the chord between two points about
+/// `span_m` apart, differentiated over time.
 pub fn yaw_rate_from_position(samples: &[Sample], span_m: f64) -> Vec<f64> {
     let n = samples.len();
     if n < 3 {
@@ -87,7 +87,7 @@ pub fn yaw_rate_from_position(samples: &[Sample], span_m: f64) -> Vec<f64> {
         .find(|x| x.is_finite())
         .unwrap_or(0.0)
         .to_radians();
-    // Projection équirectangulaire locale : x vers l'est, y vers le nord (m).
+    // Local equirectangular projection: x east, y north (m).
     let x: Vec<f64> = samples
         .iter()
         .map(|s| EARTH_RADIUS_M * lat0.cos() * (s.lon.to_radians() - lon0))
@@ -96,8 +96,8 @@ pub fn yaw_rate_from_position(samples: &[Sample], span_m: f64) -> Vec<f64> {
         .iter()
         .map(|s| EARTH_RADIUS_M * (s.lat.to_radians() - lat0))
         .collect();
-    // Cap de la corde centrée sur i, de longueur ~span_m (cap compté
-    // antihoraire depuis l'est : un virage à gauche l'augmente).
+    // Heading of the chord centered on i, of length ~span_m (heading counted
+    // counterclockwise from east: a left turn increases it).
     let heading: Vec<f64> = (0..n)
         .map(|i| {
             let mut k = 1;
@@ -112,12 +112,12 @@ pub fn yaw_rate_from_position(samples: &[Sample], span_m: f64) -> Vec<f64> {
             (y[b] - y[a]).atan2(x[b] - x[a])
         })
         .collect();
-    // Lissage plus large que pour `Yaw` : les positions exportées en float32 ont
-    // une résolution d'environ 0,5 m, ce qui bruite le cap.
+    // Wider smoothing than for `Yaw`: positions exported as float32 have a
+    // resolution of about 0.5 m, which adds noise to the heading.
     smooth(&time_derivative(samples, &unwrap_angle(&heading)), 10)
 }
 
-/// Remplit `yaw_rate` et `lat_accel` là où ils manquent. Retourne l'origine retenue.
+/// Fills `yaw_rate` and `lat_accel` where they are missing. Returns the chosen origin.
 pub fn fill_rotation(samples: &mut [Sample], yaw: Option<&[f64]>) -> RotationOrigin {
     let has_yaw_rate = samples.iter().any(|s| s.yaw_rate.is_finite());
     let has_lat_accel = samples.iter().any(|s| s.lat_accel.is_finite());
@@ -176,11 +176,11 @@ pub enum ChannelOrigin {
 impl ChannelOrigin {
     pub fn label(self) -> &'static str {
         match self {
-            ChannelOrigin::Measured => "mesuré",
-            ChannelOrigin::FromYaw => "estimé (dérivée du cap)",
-            ChannelOrigin::FromPosition => "estimé (trajectoire GPS)",
-            ChannelOrigin::FromYawRate => "estimé (YawRate × vitesse)",
-            ChannelOrigin::Missing => "absent",
+            ChannelOrigin::Measured => "measured",
+            ChannelOrigin::FromYaw => "estimated (heading derivative)",
+            ChannelOrigin::FromPosition => "estimated (GPS path)",
+            ChannelOrigin::FromYawRate => "estimated (YawRate × speed)",
+            ChannelOrigin::Missing => "missing",
         }
     }
 }

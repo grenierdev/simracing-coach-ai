@@ -1,7 +1,7 @@
-//! Fichiers de télémétrie iRacing (.ibt) : lecture et écriture.
+//! iRacing telemetry files (.ibt): reading and writing.
 //!
-//! Un .ibt contient : `irsdk_header`, `irsdk_diskSubHeader`, le YAML de session,
-//! la table des variables puis `recordCount` lignes de `bufLen` octets à partir de
+//! An .ibt contains: `irsdk_header`, `irsdk_diskSubHeader`, the session YAML,
+//! the variable table, then `recordCount` rows of `bufLen` bytes starting at
 //! `varBuf[0].bufOffset`.
 
 use std::fs::File;
@@ -20,11 +20,11 @@ use crate::session::SessionInfo;
 
 #[derive(Debug, Error)]
 pub enum IbtError {
-    #[error("E/S : {0}")]
+    #[error("I/O: {0}")]
     Io(#[from] io::Error),
-    #[error("format : {0}")]
+    #[error("format: {0}")]
     Format(#[from] FormatError),
-    #[error("canaux obligatoires absents : {0:?}")]
+    #[error("required channels missing: {0:?}")]
     MissingChannels(Vec<&'static str>),
 }
 
@@ -56,9 +56,9 @@ pub struct IbtFile {
 impl IbtFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, IbtError> {
         let file = File::open(path)?;
-        // SAFETY : le fichier est ouvert en lecture seule ; s'il était tronqué
-        // pendant la lecture, l'accès planterait. Acceptable pour un fichier
-        // de télémétrie terminé.
+        // SAFETY: the file is opened read-only; if it were truncated during
+        // reading, access would crash. Acceptable for a finished telemetry
+        // file.
         let mmap = unsafe { Mmap::map(&file)? };
         Self::from_data(Data::Mapped(mmap))
     }
@@ -81,7 +81,7 @@ impl IbtFile {
         let channels = ChannelMap::new(&vars);
         let start = header.var_buf[0].buf_offset.max(0) as usize;
         let row_len = header.buf_len as usize;
-        // Le recordCount peut être faux si iRacing a planté : on se fie à la taille réelle.
+        // recordCount may be wrong if iRacing crashed: rely on the actual size.
         let available = b
             .len()
             .saturating_sub(start)
@@ -139,7 +139,7 @@ impl IbtFile {
     }
 }
 
-/// Valeur d'un canal pour [`IbtWriter`].
+/// Channel value for [`IbtWriter`].
 #[derive(Debug, Clone, Copy)]
 pub enum Value {
     Bool(bool),
@@ -148,8 +148,8 @@ pub enum Value {
     Double(f64),
 }
 
-/// Écrit un .ibt. Sert aux tests, au générateur synthétique et, plus tard,
-/// à l'enregistrement des sessions live.
+/// Writes an .ibt. Used by tests, the synthetic generator and, later, live
+/// session recording.
 pub struct IbtWriter {
     vars: Vec<VarHeader>,
     row_len: usize,
@@ -159,13 +159,13 @@ pub struct IbtWriter {
 }
 
 impl IbtWriter {
-    /// `channels` : (nom, type, unité).
+    /// `channels`: (name, type, unit).
     pub fn new(channels: &[(&str, VarType, &str)], session_yaml: &str, tick_rate: i32) -> Self {
         let mut offset: usize = 0;
         let vars = channels
             .iter()
             .map(|(name, ty, unit)| {
-                // Alignement naturel du type.
+                // Natural alignment of the type.
                 let size = ty.size();
                 offset = offset.div_ceil(size) * size;
                 let v = VarHeader {
@@ -190,9 +190,9 @@ impl IbtWriter {
         }
     }
 
-    /// Ajoute une ligne. `values` dans l'ordre des canaux déclarés.
+    /// Adds a row. `values` in the order of the declared channels.
     pub fn push(&mut self, values: &[Value]) {
-        assert_eq!(values.len(), self.vars.len(), "nombre de valeurs");
+        assert_eq!(values.len(), self.vars.len(), "number of values");
         let base = self.rows.len();
         self.rows.resize(base + self.row_len, 0);
         let row = &mut self.rows[base..];
@@ -209,13 +209,13 @@ impl IbtWriter {
                 (VarType::Double, Value::Double(x)) => {
                     row[o..o + 8].copy_from_slice(&x.to_le_bytes())
                 }
-                (ty, val) => panic!("type incompatible pour {} : {ty:?} / {val:?}", v.name),
+                (ty, val) => panic!("incompatible type for {}: {ty:?} / {val:?}", v.name),
             }
         }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        // iRacing encode le YAML en ISO-8859-1.
+        // iRacing encodes the YAML as ISO-8859-1.
         let yaml: Vec<u8> = self
             .session_yaml
             .chars()

@@ -1,12 +1,12 @@
-//! Rééchantillonnage d'un tour sur une grille régulière de `LapDistPct`.
+//! Resampling of a lap on a regular `LapDistPct` grid.
 //!
-//! Base de l'alignement entre tours : deux tours rééchantillonnés sur la même
-//! grille se comparent point à point.
+//! Basis of lap-to-lap alignment: two laps resampled on the same grid can be
+//! compared point by point.
 
 use crate::laps::Lap;
 use crate::sample::Sample;
 
-/// Un tour sous forme de couples (pct, valeur) strictement croissants en pct.
+/// A lap as (pct, value) pairs strictly increasing in pct.
 fn monotonic_points<'a>(
     samples: &'a [Sample],
     value: impl Fn(&Sample) -> f64 + 'a,
@@ -15,8 +15,8 @@ fn monotonic_points<'a>(
     samples.iter().filter_map(move |s| {
         let p = s.lap_dist_pct as f64;
         let v = value(s);
-        // On écarte les reculs (voiture arrêtée qui dérive, bruit) pour garder
-        // une fonction de pct ; les valeurs non finies sont ignorées.
+        // Discard backward steps (stopped car drifting, noise) to keep a
+        // function of pct; non-finite values are ignored.
         if p > last && v.is_finite() {
             last = p;
             Some((p, v))
@@ -26,8 +26,8 @@ fn monotonic_points<'a>(
     })
 }
 
-/// Valeurs de `value` interpolées linéairement aux positions `grid` (pct croissants).
-/// Hors de la couverture du tour, la valeur la plus proche est reprise.
+/// Values of `value` linearly interpolated at positions `grid` (increasing pct).
+/// Outside the lap coverage, the nearest value is used.
 pub fn resample(samples: &[Sample], value: impl Fn(&Sample) -> f64, grid: &[f64]) -> Vec<f64> {
     let pts: Vec<(f64, f64)> = monotonic_points(samples, value).collect();
     if pts.is_empty() {
@@ -53,19 +53,19 @@ pub fn resample(samples: &[Sample], value: impl Fn(&Sample) -> f64, grid: &[f64]
     out
 }
 
-/// Grille régulière de `n` points dans [0, 1).
+/// Regular grid of `n` points in [0, 1).
 pub fn uniform_grid(n: usize) -> Vec<f64> {
     (0..n).map(|i| i as f64 / n as f64).collect()
 }
 
-/// Temps écoulé depuis le début du tour, rééchantillonné sur `grid`.
-/// Sert au calcul du delta entre deux tours : `delta(p) = t_a(p) - t_b(p)`.
+/// Time elapsed since the start of the lap, resampled on `grid`.
+/// Used to compute the delta between two laps: `delta(p) = t_a(p) - t_b(p)`.
 pub fn elapsed_time(lap: &Lap, grid: &[f64]) -> Vec<f64> {
     resample(&lap.samples, |s| s.session_time - lap.start_time, grid)
 }
 
-/// Distance parcourue (m) en fonction de pct : `LapDist` si présent,
-/// sinon intégrale de la vitesse.
+/// Distance traveled (m) as a function of pct: `LapDist` if present,
+/// otherwise the integral of speed.
 pub fn distance_m(samples: &[Sample]) -> Vec<f64> {
     if samples.iter().all(|s| s.lap_dist.is_finite()) {
         return samples.iter().map(|s| s.lap_dist as f64).collect();
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn same_lap_at_different_rates_aligns() {
-        // Même tour échantillonné à deux fréquences : les courbes rééchantillonnées coïncident.
+        // Same lap sampled at two rates: the resampled curves match.
         let lap = |n: usize| -> Vec<Sample> {
             (0..n)
                 .map(|i| {
@@ -141,7 +141,7 @@ mod tests {
             .zip(&b)
             .map(|(x, y)| (x - y).abs())
             .fold(0.0, f64::max);
-        assert!(max_err < 0.05, "écart max {max_err}");
+        assert!(max_err < 0.05, "max error {max_err}");
     }
 
     #[test]
