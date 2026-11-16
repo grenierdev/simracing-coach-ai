@@ -73,6 +73,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
+          # Déclenchement manuel : le tag est créé sur le commit compilé.
+          target_commitish: ${{ github.sha }}
           name: Coach simracing ${{ env.TAG }}
           body_path: docs/release-notes/${{ env.TAG }}.md
           prerelease: true
