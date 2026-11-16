@@ -1,120 +1,138 @@
-# Coach vocal de simracing pour iRacing
+# Voice simracing coach for iRacing
 
-Application de bureau Windows en Rust qui coache le pilote à la voix pendant qu'il roule sur iRacing. Elle compare la télémétrie live à un tour de référence, planifie des consignes par virage et permet de parler au coach en roulant.
+Windows desktop application in Rust that coaches the driver by voice while they drive in iRacing. It compares live telemetry to a reference lap, schedules cues per corner and lets the driver talk to the coach while driving.
 
-Pipeline vocal : STT → Claude (via ACP) → TTS. Le STT et le TTS tournent dans le processus avec sherpa-onnx, sans serveur ni Python. Claude accède à la télémétrie par des outils MCP exposés par le programme.
+Voice pipeline: STT → Claude (via ACP) → TTS. STT and TTS run in-process with sherpa-onnx, with no server and no Python. Claude reads the telemetry through MCP tools exposed by the program.
 
-## État
+## Status
 
-| Jalon | État |
+| Milestone | Status |
 |---|---|
-| 1. Télémétrie live, enregistrement des tours, affichage GPUI | **fait** |
-| 2. Tour de référence, alignement, deltas par virage | **fait** |
-| 3. Déclencheurs, consignes statiques, TTS | **fait** |
-| 4. Serveur MCP et client ACP, saisie texte | **fait** |
-| 5. STT push-to-talk, conversation vocale | **fait** |
-| 6. Planification automatique du tour suivant | **fait** |
+| 1. Live telemetry, lap recording, GPUI display | **done** |
+| 2. Reference lap, alignment, per-corner deltas | **done** |
+| 3. Triggers, static cues, TTS | **done** |
+| 4. MCP server and ACP client, text input | **done** |
+| 5. Push-to-talk STT, voice conversation | **done** |
+| 6. Automatic planning of the next lap | **done** |
 
-![Jalon 6 : consigne du coach sur T6 préparée par la session d'analyse (faux agent)](docs/jalon6.png)
+![Milestone 6: coach cue on T6 prepared by the analysis session (mock agent)](docs/milestone6.png)
 
-Les conclusions des vérifications préalables (crates, versions, ACP, MCP, authentification, Garage61, STT/TTS, latence) sont dans [docs/verifications.md](docs/verifications.md).
+The conclusions of the preliminary checks (crates, versions, ACP, MCP, authentication, Garage61, STT/TTS, latency) are in [docs/verifications.md](docs/verifications.md).
 
-## Organisation
+## Layout
 
 ```
 crates/
-  telemetry/   format irsdk, source live (Windows), rejeu .ibt, découpage en tours,
-               détection des virages, rééchantillonnage, piste synthétique
-  reference/   import du tour de référence : CSV Garage61, meilleur tour d'un .ibt,
-               estimation de YawRate/LatAccel s'ils manquent
-  analysis/    alignement sur LapDistPct, zones de virage, métriques et deltas
-  triggers/    moteur de consignes (position, condition, priorité, expiration,
-               silence au freinage), plan TOML, boucle rapide
-  voice/       traits Tts et Stt, moteurs sherpa-onnx (Piper, Kokoro, Parakeet),
-               sortie audio cpal, thread de parole, téléchargement des modèles
-  mcp/         serveur MCP embarqué (rmcp, HTTP local + jeton) : outils de télémétrie
-  coach/       client ACP : adaptateur Claude en sous-processus, session, latence,
-               découpage de la réponse en phrases
-  input/       clavier, souris, volants, boîtiers, manettes lus en arrière-plan ;
-               capture de liaison, push-to-talk
-  ui/          interface GPUI
-  app/         binaire `simcoach` : choix de la source, lancement de l'UI
+  telemetry/   irsdk format, live source (Windows), .ibt replay, lap splitting,
+               corner detection, resampling, synthetic track
+  reference/   reference lap import: Garage61 CSV, best lap of an .ibt,
+               YawRate/LatAccel estimation when missing
+  analysis/    alignment on LapDistPct, corner zones, metrics and deltas
+  triggers/    cue engine (position, condition, priority, expiry,
+               silence under braking), TOML plan, fast loop
+  voice/       Tts and Stt traits, sherpa-onnx engines (Piper, Kokoro, Parakeet),
+               cpal audio output, speech thread, model download
+  mcp/         embedded MCP server (rmcp, local HTTP + token): telemetry tools
+  coach/       ACP client: Claude adapter as a subprocess, session, latency,
+               splitting the reply into sentences
+  input/       keyboard, mouse, wheels, button boxes, gamepads read in the background;
+               binding capture, push-to-talk
+  ui/          GPUI interface
+  app/         `simcoach` binary: source selection, UI startup
 ```
 
 
-Boucle rapide : un thread `telemetry` lit la source à 60 Hz, découpe les tours et publie un instantané. L'UI le lit à 30 Hz sans jamais bloquer la boucle. Le thread `coach-fast` reçoit chaque échantillon via `TelemetryHub::subscribe_samples` (file bornée : un abonné lent perd des échantillons au lieu de ralentir la boucle), fait tourner le moteur de consignes et pilote le thread de parole.
+Fast loop: a `telemetry` thread reads the source at 60 Hz, splits laps and publishes a snapshot. The UI reads it at 30 Hz without ever blocking the loop. The `coach-fast` thread receives every sample through `TelemetryHub::subscribe_samples` (bounded queue: a slow subscriber drops samples instead of slowing the loop down), runs the cue engine and drives the speech thread.
 
-## Utilisation
+## Usage
 
 ```sh
 simcoach                              # live iRacing (Windows)
-simcoach --replay session.ibt         # rejoue un .ibt comme s'il était live
+simcoach --replay session.ibt         # replays an .ibt as if it were live
 simcoach --replay session.ibt --speed 4 --loop
-simcoach --synthetic                  # session synthétique générée en mémoire
-simcoach --write-synthetic demo.ibt   # écrit la session synthétique en .ibt
-simcoach --synthetic --reference "Garage 61 - ... .csv"   # avec une référence
-simcoach --write-synthetic-reference <dossier>            # référence synthétique (CSV)
+simcoach --synthetic                  # synthetic session generated in memory
+simcoach --write-synthetic demo.ibt   # writes the synthetic session as an .ibt
+simcoach --synthetic --reference "Garage 61 - ... .csv"   # with a reference
+simcoach --write-synthetic-reference <folder>             # synthetic reference (CSV)
 ```
 
-La référence se choisit aussi dans l'interface (bouton « Choisir… »).
+The reference can also be chosen in the interface.
 
 ```sh
-simcoach ... --plan plans/synthetique.toml   # plan de consignes
-simcoach ... --no-voice                      # consignes affichées sans être dites
-simcoach ... --model sonnet                  # modèle de la conversation (défaut : haiku)
-simcoach ... --analysis-model opus          # modèle de la planification (défaut : sonnet)
-simcoach ... --no-planning                   # sans session d'analyse
-simcoach ... --no-agent                      # sans Claude
+simcoach ... --plan plans/synthetic.toml     # cue plan
+simcoach ... --no-voice                      # cues shown but not spoken
+simcoach ... --model sonnet                  # conversation model (default: haiku)
+simcoach ... --analysis-model opus           # planning model (default: sonnet)
+simcoach ... --no-planning                   # no analysis session
+simcoach ... --no-agent                      # no Claude
 ```
 
-En mode `--synthetic`, la référence synthétique et `plans/synthetique.toml` sont chargés par défaut. Le plan se choisit aussi dans l'interface.
+In `--synthetic` mode, the synthetic reference and `plans/synthetic.toml` are loaded by default. The plan can also be chosen in the interface.
 
-## Consignes
+## Cues
 
-Un plan est un fichier TOML ; la syntaxe complète est dans `crates/triggers/src/plan.rs` et un exemple commenté dans `plans/synthetique.toml`.
+A plan is a TOML file; the full syntax is in `crates/triggers/src/plan.rs` and a commented example in `plans/synthetic.toml`.
 
 ```toml
-[[consigne]]
-virage = "T4"            # virage de la carte de la piste (tirée de la référence)
-ancre = "freinage"       # freinage, entree, apex ou sortie
-decalage_m = -300        # 300 m avant l'ancre
-texte = "Épingle, patiente avant les gaz."
-priorite = 7             # 0 à 9
-repetition = "chaque_tour"           # une_fois, chaque_tour ou { tours = 3 }
-condition = { delta_au_dessus = 0.3 } # facultatif
+[settings]
+quiet_lead_m = 30        # silence from 30 m before the reference braking point
+quiet_until = "apex"     # brake_release, apex or exit
+max_delay_m = 150        # drop a cue spoken more than 150 m late
+
+[[trigger]]
+id = "t4"
+corner = "T4"            # corner of the track map (taken from the reference)
+anchor = "braking"       # braking, entry, apex or exit
+offset_m = -300          # 300 m before the anchor
+text = "Hairpin, be patient before the throttle."
+priority = 7             # 0 to 9
+repeat = "every_lap"     # "once", "every_lap" or { laps = 3 }
+condition = { delta_above = 0.3 }   # optional
+expire_after_laps = 2    # optional
+
+[[trigger]]
+position = 0.005         # absolute position (LapDistPct), no corner
+text = "New lap."
+repeat = "once"
 ```
 
-Règles du moteur :
+Available conditions: `speed_above_kmh`, `speed_below_kmh`, `delta_above`, `delta_below` (live delta to the reference, in seconds) and `min_lap`.
 
-- une consigne est armée quand la voiture franchit sa position et que sa condition est vraie, puis dite dès qu'un créneau se libère ;
-- **aucune parole en zone de freinage** : rien ne démarre pendant un freinage (pédale au-dessus de 5 %) ni dans une zone de silence (de 30 m avant le freinage de la référence jusqu'à l'apex, réglable), et une phrase en cours est coupée si le pilote freine ;
-- une phrase n'est lancée que si elle a le temps d'être dite avant la prochaine zone de silence, d'après sa durée réelle (phrases synthétisées à l'avance) et la vitesse ;
-- entre deux consignes en attente, la plus prioritaire passe d'abord ; au-delà de son retard maximal (150 m par défaut), une consigne est abandonnée.
+Engine rules:
 
-## Voix
+- a cue is armed when the car crosses its position and its condition holds, then spoken as soon as a slot frees up;
+- **no speech in braking zones**: nothing starts during braking (pedal above 5 %) or inside a quiet zone (from 30 m before the reference braking point to the apex, adjustable), and a sentence in progress is cut off if the driver brakes;
+- a sentence is only started if it has time to be spoken before the next quiet zone, based on its actual duration (sentences are synthesized in advance) and the speed;
+- among pending cues, the highest priority goes first; past its maximum delay (150 m by default), a cue is dropped.
 
-Les moteurs sont derrière les traits `voice::Tts` et `voice::Stt` : on peut changer de moteur sans toucher au reste. Implémentations actuelles : `SherpaTts::piper` (voix par défaut `fr_FR-siwis`), `SherpaTts::kokoro`, `SherpaStt::parakeet`, et `SilentTts` (muet).
+## Voice
 
-Au premier lancement, la voix (environ 80 Mo) est téléchargée depuis Hugging Face dans le dossier de données de l'utilisateur (`%LOCALAPPDATA%\simcoach\data\models`), ou dans `SIMCOACH_MODELS_DIR`. Pour télécharger à l'avance, avec le modèle de reconnaissance vocale (environ 670 Mo) :
+The engines sit behind the `voice::Tts` and `voice::Stt` traits, so an engine can be swapped without touching the rest. Current implementations: `SherpaTts::piper` (default voice `fr_FR-siwis`), `SherpaTts::kokoro`, `SherpaStt::parakeet`, and `SilentTts` (mute).
+
+On first launch, the voice (about 80 MB) is downloaded from Hugging Face into the user's data folder (`%LOCALAPPDATA%\simcoach\data\models`), or into `SIMCOACH_MODELS_DIR`. To download in advance, together with the speech recognition model (about 670 MB):
 
 ```sh
 cargo run -p voice --no-default-features --example download_models -- --stt
 ```
 
-La bibliothèque sherpa-onnx est téléchargée par `cargo build` depuis les releases GitHub (feature `sherpa-static`, par défaut). Sans accès à GitHub, on peut prendre la même bibliothèque sur npm (`sherpa-onnx-win-x64` ou `sherpa-onnx-linux-x64`, version 1.13.8) :
+The sherpa-onnx library is downloaded by `cargo build` from the GitHub releases (`sherpa-static` feature, on by default). Without access to GitHub, the same library is available on npm (`sherpa-onnx-win-x64` or `sherpa-onnx-linux-x64`, version 1.13.8):
 
 ```sh
-SHERPA_ONNX_LIB_DIR=<dossier de la bibliothèque> cargo build --no-default-features --features app/sherpa-shared,voice/sherpa-shared
+SHERPA_ONNX_LIB_DIR=<library folder> cargo build --no-default-features --features app/sherpa-shared,voice/sherpa-shared
 ```
 
-Le mode rejeu et la session synthétique permettent de développer sans lancer iRacing, y compris sous Linux.
+Replay mode and the synthetic session make it possible to develop without running iRacing, including on Linux.
 
-## Compilation
+## Voice language
 
-Rust 1.88 ou plus récent.
+The voice language (speech recognition, text-to-speech and the coach's spoken replies) will be selectable between French and English.
 
-- **Windows** : MSVC et le Windows SDK. La compilation en release de GPUI demande `fxc.exe` (Windows SDK) ou la variable `GPUI_FXC_PATH`.
-- **Linux** (développement en rejeu, CI) :
+## Building
+
+Rust 1.88 or newer.
+
+- **Windows**: MSVC and the Windows SDK. A release build of GPUI needs `fxc.exe` (Windows SDK) or the `GPUI_FXC_PATH` variable.
+- **Linux** (replay development, CI):
 
   ```sh
   sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
@@ -129,114 +147,114 @@ cargo run -p app --bin simcoach -- --synthetic
 
 ## Secrets
 
-Les jetons sont lus dans les variables d'environnement, jamais dans le code :
+Tokens are read from environment variables, never from the code:
 
-- `GARAGE61_TOKEN`, optionnel, au jalon 2.
+- `GARAGE61_TOKEN`, optional, from milestone 2.
 
-Claude est utilisé avec l'abonnement du CLI : il suffit de s'être connecté une fois avec `claude`. Il n'y a pas de clé API.
+Claude is used with the CLI subscription: logging in once with `claude` is enough. There is no API key.
 
-Les fichiers `.env`, `*.ibt` et `*.csv` sont ignorés par git.
+The `.env`, `*.ibt` and `*.csv` files are ignored by git.
 
-## Détection des virages
+## Corner detection
 
-La détection se fait sur le meilleur tour valide et se recalcule quand il s'améliore :
+Detection runs on the best valid lap and is recomputed when it improves:
 
-1. Courbure `YawRate / Speed`, avec repli sur `LatAccel / Speed²` si `YawRate` manque.
-2. Rééchantillonnage tous les 2 m et lissage sur 30 m.
-3. Seuil avec hystérésis : le virage commence sous 200 m de rayon et se termine au-dessus de 320 m.
-4. Fusion des segments de même sens à moins de 40 m l'un de l'autre, et recollage d'un virage à cheval sur la ligne.
+1. Curvature `YawRate / Speed`, falling back to `LatAccel / Speed²` if `YawRate` is missing.
+2. Resampling every 2 m and smoothing over 30 m.
+3. Threshold with hysteresis: a corner starts below a 200 m radius and ends above 320 m.
+4. Merging of same-direction segments less than 40 m apart, and rejoining of a corner that straddles the line.
 
-Les paramètres sont dans `CornerDetectionParams`.
+The parameters are in `CornerDetectionParams`.
 
-À valider sur de vraies pistes : la numérotation ne suivra pas toujours la numérotation officielle. Les courbes rapides à grand rayon sont ignorées, ce qui est voulu, et une chicane compte pour deux virages. Il faudra probablement une table de correspondance par piste.
+Still to be validated on real tracks: the numbering will not always match the official one. Fast, large-radius bends are ignored, which is intended, and a chicane counts as two corners. A per-track mapping table will probably be needed.
 
-## Analyse par virage
+## Per-corner analysis
 
-Les virages sont détectés sur le tour de référence, qui définit la carte de la piste. Chaque virage reçoit une zone allant du milieu de la ligne droite précédente au milieu de la suivante. Les zones couvrent tout le tour sans chevauchement, donc la somme des deltas par virage égale le delta du tour.
+Corners are detected on the reference lap, which defines the track map. Each corner gets a zone running from the middle of the previous straight to the middle of the next one. The zones cover the whole lap without overlap, so the sum of the per-corner deltas equals the lap delta.
 
-Métriques par virage, pour chaque tour comparé à la référence :
+Per-corner metrics, for each lap compared to the reference:
 
-| Métrique | Définition |
+| Metric | Definition |
 |---|---|
-| Δ temps | temps passé dans la zone moins celui de la référence |
-| Freinage | premier appui au-dessus de 10 % avant la vitesse minimale ; écart en mètres (+ = plus tard) |
-| Trail braking | distance freinée après le début géométrique du virage |
-| Vitesse minimale | et sa position (repère de l'apex) |
-| Reprise des gaz | retour au-dessus de 20 % après le point le plus bas de l'accélérateur ; écart en mètres (+ = plus tard) |
-| Roue libre | temps sans frein ni gaz (sous 5 %) dans la zone |
-| Rotation | médiane de `YawRate / (Speed × volant)` au cœur du virage (au moins la moitié du braquage maximal, 15 m retirés aux bords), en entrée et en sortie de la vitesse minimale, rapportée à la référence. Sous 1 : moins de rotation pour le même braquage (sous-virage) ; au-dessus : plus de rotation (survirage) |
+| Δ time | time spent in the zone minus the reference's |
+| Braking | first press above 10 % before the minimum speed; gap in meters (+ = later) |
+| Trail braking | distance braked after the geometric start of the corner |
+| Minimum speed | and its position (apex marker) |
+| Throttle pickup | return above 20 % after the lowest throttle point; gap in meters (+ = later) |
+| Coasting | time with neither brake nor throttle (below 5 %) in the zone |
+| Rotation | median of `YawRate / (Speed × steering)` in the core of the corner (at least half the maximum steering angle, 15 m trimmed at each edge), before and after the minimum speed, relative to the reference. Below 1: less rotation for the same steering (understeer); above: more rotation (oversteer) |
 
-La rotation n'a de sens que pour la même voiture que la référence. Quand le `YawRate` de la référence est estimé (CSV sans ce canal), l'interface l'indique : les rapports sont alors indicatifs.
+Rotation is only meaningful with the same car as the reference. When the reference `YawRate` is estimated (CSV without that channel), the interface says so: the ratios are then only indicative.
 
-## Claude (ACP et MCP)
+## Claude (ACP and MCP)
 
-Le programme lance l'adaptateur `@agentclientprotocol/claude-agent-acp` (0.107.0) en sous-processus et lui parle en ACP sur stdio. Prérequis :
+The program starts the `@agentclientprotocol/claude-agent-acp` adapter (0.107.0) as a subprocess and talks ACP to it over stdio. Requirements:
 
-- s'être connecté une fois au CLI Claude (`claude`, puis `/login`) : le coach utilise l'**abonnement**. `ANTHROPIC_API_KEY` est retirée de l'environnement au démarrage pour que l'adaptateur ne l'utilise pas ;
-- l'adaptateur : par défaut `claude-agent-acp` s'il est dans le PATH (exécutable autonome Windows disponible dans les releases de l'adaptateur), sinon `npx -y @agentclientprotocol/claude-agent-acp@0.107.0` (Node requis). `SIMCOACH_ACP_COMMAND` permet d'indiquer une autre commande.
+- having logged in once to the Claude CLI (`claude`, then `/login`): the coach uses the **subscription**. `ANTHROPIC_API_KEY` is removed from the environment at startup so the adapter does not use it;
+- the adapter: by default `claude-agent-acp` if it is on the PATH (a standalone Windows executable is available in the adapter's releases), otherwise `npx -y @agentclientprotocol/claude-agent-acp@0.107.0` (requires Node). `SIMCOACH_ACP_COMMAND` sets a different command.
 
-La session est ouverte au démarrage et gardée chaude :
+The session is opened at startup and kept warm:
 
-- prompt système de Claude Code remplacé par celui du coach, lu dans `%LOCALAPPDATA%\simcoach\data\sessions\conversation\CLAUDE.md` (créé au premier lancement depuis `crates/coach/prompts/CLAUDE.md`, modifiable) ;
-- outils intégrés de Claude Code retirés (`tools: []`), seuls nos outils MCP autorisés ; toute autre demande de permission est refusée ;
-- réglages Claude Code du poste ignorés ; réflexion coupée pour la conversation.
+- Claude Code's system prompt is replaced by the coach's, read from `%LOCALAPPDATA%\simcoach\data\sessions\conversation\CLAUDE.md` (created on first launch from `crates/coach/prompts/CLAUDE.md`, editable);
+- Claude Code's built-in tools are removed (`tools: []`), only our MCP tools are allowed; any other permission request is denied;
+- the machine's Claude Code settings are ignored; thinking is disabled for the conversation.
 
-Chaque message du pilote est précédé d'un bloc `[Contexte]` : tour, position, dernier et prochain virage, delta live, dernières consignes dites.
+Each driver message is preceded by a `[Context]` block: lap, position, last and next corner, live delta, last cues spoken.
 
-Outils MCP exposés (serveur `coach`, HTTP sur `127.0.0.1`, port éphémère, jeton Bearer aléatoire) :
+MCP tools exposed (server `coach`, HTTP on `127.0.0.1`, ephemeral port, random Bearer token):
 
-| Outil | Rôle |
+| Tool | Purpose |
 |---|---|
-| `get_session_overview()` | derniers tours, delta à la référence, temps perdu par virage, classé |
-| `get_corner_summary(corner, laps)` | métriques d'un virage par tour face à la référence |
-| `get_corner_trace(corner, channels, lap)` | traces (au plus 100 points par canal), tour et référence |
-| `update_plan(consignes, mode)` | remplace ou complète le plan de consignes (validé avant application) |
-| `say(texte, quand)` | phrase ponctuelle : maintenant, prochaine ligne droite ou position ; toujours soumise à la règle du silence au freinage |
+| `get_session_overview()` | latest laps, delta to the reference, time lost per corner, ranked |
+| `get_corner_summary(corner, laps)` | metrics of one corner per lap against the reference |
+| `get_corner_trace(corner, channels, lap)` | traces (at most 100 points per channel), lap and reference |
+| `update_plan(triggers, mode)` | replaces (`replace`) or extends (`add`) the cue plan (validated before being applied) |
+| `say(text, when, corner, anchor, offset_m, position)` | one-off sentence: `now`, `next_straight` or at a `position` (corner + anchor + offset, or absolute position); always subject to the silence-under-braking rule |
 
-L'interface affiche la conversation, les appels d'outils avec leur durée, et la latence du dernier tour de parole (premier mot) dans l'indicateur « Agent ACP ».
+The interface shows the conversation, the tool calls with their duration, and the latency of the last speaking turn (first word) in the ACP agent indicator.
 
-Pour développer sans Claude, un faux agent répond comme le coach (accusé, vrai appel à `get_session_overview`, réponse) :
+To develop without Claude, a mock agent answers like the coach (acknowledgement, real call to `get_session_overview`, reply):
 
 ```sh
 cargo build -p coach --example mock_agent
 SIMCOACH_ACP_COMMAND=target/debug/examples/mock_agent cargo run -p app --bin simcoach -- --synthetic
 ```
 
-Pour mesurer la latence réelle de l'adaptateur sur le poste :
+To measure the adapter's actual latency on the machine:
 
 ```sh
-cargo run -p coach --example probe -- --model haiku --prompt "Bonjour"
+cargo run -p coach --example probe -- --model haiku --prompt "Hello"
 ```
 
-## Conversation vocale (push-to-talk)
+## Voice conversation (push-to-talk)
 
-Le bouton de push-to-talk se règle dans l'interface, comme dans un jeu : « Modifier… », puis appuyer sur n'importe quelle touche, bouton de souris (sauf le clic gauche), bouton de volant, de boîtier, de joystick ou de manette, ou direction d'un chapeau (POV). Échap annule. Le réglage est enregistré dans `%APPDATA%\simcoach\config\settings.toml` (`SIMCOACH_SETTINGS` pour un autre fichier).
+The push-to-talk button is set in the interface, as in a game: click the edit button, then press any key, mouse button (except left click), wheel, button box, joystick or gamepad button, or hat (POV) direction. Escape cancels. The setting is saved in `%APPDATA%\simcoach\config\settings.toml` (`SIMCOACH_SETTINGS` for a different file).
 
-Les entrées sont lues **en arrière-plan**, pendant qu'iRacing a le focus :
+Inputs are read **in the background**, while iRacing has focus:
 
-- clavier et souris : état global (`GetAsyncKeyState` via `device_query`) ;
-- volants, pédaliers, boîtiers, joysticks, manettes : DirectInput 8 en mode arrière-plan non exclusif, comme iRacing. Windows Gaming Input (utilisé par défaut par `gilrs`) n'a pas été retenu : il exige que la fenêtre de l'application ait le focus. Un périphérique branché en cours de route est détecté en deux secondes ; si l'identifiant d'instance change (autre port USB), le nom du produit suffit à retrouver le bouton.
+- keyboard and mouse: global state (`GetAsyncKeyState` via `device_query`);
+- wheels, pedals, button boxes, joysticks, gamepads: DirectInput 8 in non-exclusive background mode, like iRacing. Windows Gaming Input (used by default by `gilrs`) was not chosen: it requires the application window to have focus. A device plugged in while running is detected within two seconds; if the instance identifier changes (different USB port), the product name is enough to find the button again.
 
-Déroulé :
+Sequence:
 
-1. appui : le coach se tait, sa réponse en cours est interrompue, le micro enregistre (300 ms de pré-enregistrement pour ne pas couper la première syllabe) ;
-2. relâchement : transcription par Parakeet (téléchargé au premier lancement, environ 670 Mo) ;
-3. le texte part à Claude avec le contexte du pilote ;
-4. la réponse est découpée en phrases au fil de l'eau ; chaque phrase est dite dès qu'elle est complète, via le moteur de consignes, donc jamais en zone de freinage. « Réponses dites : non » coupe la voix des réponses (le texte reste affiché).
+1. press: the coach goes quiet, its current reply is interrupted, the microphone records (300 ms of pre-roll so the first syllable is not cut);
+2. release: transcription by Parakeet (downloaded on first launch, about 670 MB);
+3. the text is sent to Claude with the driver's context;
+4. the reply is split into sentences as it streams; each sentence is spoken as soon as it is complete, through the cue engine, so never in a braking zone. A toggle in the conversation panel mutes spoken replies (the text is still shown).
 
-L'interface affiche la latence du dernier tour vocal : fin de parole → texte → premier mot de Claude → premier son.
+The interface shows the latency of the last voice turn: end of speech → text → Claude's first word → first sound.
 
-## Planification automatique du tour suivant
+## Automatic planning of the next lap
 
-Une seconde session ACP, distincte de la conversation, joue l'ingénieur de piste (Sonnet par défaut, `--analysis-model`, réflexion permise). À chaque tour complet et valide :
+A second ACP session, separate from the conversation, plays the race engineer (Sonnet by default, `--analysis-model`, thinking allowed). On each complete, valid lap:
 
-1. le programme lui envoie le bilan : temps du tour, vue d'ensemble de la session (`get_session_overview`, jointe au message pour économiser un appel) et consignes du coach actives ;
-2. Claude creuse les virages les plus coûteux (`get_corner_summary`, `get_corner_trace` au besoin) ;
-3. il remplace la **couche de consignes du coach** par `update_plan` : au plus trois consignes, placées avant les freinages, qui expirent après deux tours ;
-4. son résumé d'une phrase s'affiche dans le panneau « Consignes ».
+1. the program sends it the summary: lap time, session overview (`get_session_overview`, attached to the message to save a call) and active coach cues;
+2. Claude digs into the most costly corners (`get_corner_summary`, `get_corner_trace` when needed);
+3. it replaces the **coach cue layer** with `update_plan`: at most three cues, placed before the braking points, expiring after two laps;
+4. its one-sentence summary is shown in the cues panel.
 
-Le plan du pilote (fichier TOML) n'est jamais modifié : les deux couches sont résolues séparément et dites ensemble, les consignes du coach marquées « ·C ». Une consigne inchangée d'un plan à l'autre garde son état (une consigne « une fois » déjà dite n'est pas redite). Un tour terminé pendant une analyse est ignoré ; l'analyse ne bloque ni la boucle rapide ni la conversation. Chaque session a son propre point d'accès MCP, pour que les journaux d'outils restent séparés.
+The driver's plan (TOML file) is never modified: the two layers are resolved separately and spoken together, with coach cues marked as such in the interface. A cue unchanged from one plan to the next keeps its state (a `once` cue already spoken is not repeated). A lap completed during an analysis is ignored; the analysis blocks neither the fast loop nor the conversation. Each session has its own MCP endpoint, so the tool logs stay separate.
 
-Le prompt de l'ingénieur est dans `%LOCALAPPDATA%\simcoach\data\sessions\analyse\CLAUDE.md` (créé depuis `crates/coach/prompts/ANALYSE.md`). « Auto : oui/non » dans le panneau « Consignes » active ou suspend la planification (réglage enregistré).
+The engineer's prompt is in `%LOCALAPPDATA%\simcoach\data\sessions\analysis\CLAUDE.md` (created from `crates/coach/prompts/ANALYSIS.md`). An auto toggle in the cues panel enables or suspends planning (the setting is saved).
 
-Coût : une analyse par tour valide avec Sonnet, sur l'abonnement. Sur une longue session, c'est la principale consommation de quota ; `--no-planning` ou « Auto : non » l'arrête.
+Cost: one analysis per valid lap with Sonnet, on the subscription. Over a long session, this is the main quota consumer; `--no-planning` or turning the auto toggle off stops it.

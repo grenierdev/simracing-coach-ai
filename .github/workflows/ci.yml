@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Dépendances système (GPUI, ALSA, entrées)
+      - name: System dependencies (GPUI, ALSA, input)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev \
@@ -22,9 +22,9 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      # sherpa-onnx-sys réutilise l'archive de target/sherpa-onnx-prebuilt ; une
-      # copie partielle restaurée par le cache s'extrait sans la bibliothèque.
-      - name: Rafraîchir sherpa-onnx (archive précompilée)
+      # sherpa-onnx-sys reuses the archive in target/sherpa-onnx-prebuilt; a partial
+      # copy restored by the cache extracts without the library.
+      - name: Refresh sherpa-onnx (prebuilt archive)
         shell: bash
         run: |
           rm -rf target/sherpa-onnx-prebuilt
@@ -41,9 +41,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # sherpa-onnx-sys réutilise l'archive de target/sherpa-onnx-prebuilt ; une
-      # copie partielle restaurée par le cache s'extrait sans la bibliothèque.
-      - name: Rafraîchir sherpa-onnx (archive précompilée)
+      # sherpa-onnx-sys reuses the archive in target/sherpa-onnx-prebuilt; a partial
+      # copy restored by the cache extracts without the library.
+      - name: Refresh sherpa-onnx (prebuilt archive)
         shell: bash
         run: |
           rm -rf target/sherpa-onnx-prebuilt

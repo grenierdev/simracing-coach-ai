@@ -1,224 +1,224 @@
-# Vérifications préalables
+# Preliminary checks
 
-Relevé du 2026-11-15. [V] : vérifié dans le code source ou la documentation. [S] : supposé, reste à confirmer.
+Survey of 2026-11-15. [V]: verified in the source code or documentation. [S]: assumed, still to be confirmed.
 
-## Synthèse des décisions
+## Summary of decisions
 
-| Sujet | Décision |
+| Topic | Decision |
 |---|---|
-| SDK iRacing et .ibt | Format implémenté dans le crate `telemetry`, sans crate externe |
-| UI | `gpui-pre` `=0.3.12` (instantané de Zed), épinglé exactement |
-| ACP | `@agentclientprotocol/claude-agent-acp` 0.107.0 et crate `agent-client-protocol` 5.3.0, protocole v1 |
-| Modèle | Un sous-processus d'adaptateur par rôle, choix via `ANTHROPIC_MODEL` ; changement à chaud via `session/set_config_option` (`configId: "model"`) |
-| Outils intégrés | `_meta.claudeCode.options.tools: []`, `allowedTools: ["mcp__coach"]`, mode `dontAsk`, et refus côté client dans `session/request_permission` (deuxième barrière) |
-| Transport MCP | HTTP streamable sur `127.0.0.1:<port éphémère>` dans le processus (`rmcp` 3.10, `transport-streamable-http-server`), avec jeton Bearer aléatoire |
-| Authentification | Abonnement du CLI (login claude.ai), décidé le 2026-11-15 |
-| Prompt système | Prompt du coach injecté en `override` à la place de celui de Claude Code, décidé le 2026-11-15 |
-| Référence | Import manuel du CSV Garage61 ; l'API ne donne pas accès aux tours hors équipe |
-| STT/TTS | **sherpa-onnx 1.13.8** embarqué dans le processus (décidé le 2026-11-15) : Parakeet v3 pour le STT, Piper `fr_FR-siwis` pour le TTS ; Kyutai abandonné. Mesuré : STT 0,2 à 0,4 s, premier son TTS 0,1 à 0,2 s sur CPU |
-| Latence 1,5 s | **Non tenue à froid** : premier mot de Claude mesuré à 1,78 s (Haiku, cloud) ; à remesurer sur le PC, voir la dernière section |
+| iRacing SDK and .ibt | Format implemented in the `telemetry` crate, without an external crate |
+| UI | `gpui-pre` `=0.3.12` (Zed snapshot), pinned exactly |
+| ACP | `@agentclientprotocol/claude-agent-acp` 0.107.0 and `agent-client-protocol` crate 5.3.0, protocol v1 |
+| Model | One adapter subprocess per role, chosen via `ANTHROPIC_MODEL`; hot switch via `session/set_config_option` (`configId: "model"`) |
+| Built-in tools | `_meta.claudeCode.options.tools: []`, `allowedTools: ["mcp__coach"]`, `dontAsk` mode, and client-side denial in `session/request_permission` (second barrier) |
+| MCP transport | Streamable HTTP on `127.0.0.1:<ephemeral port>` in-process (`rmcp` 3.10, `transport-streamable-http-server`), with a random Bearer token |
+| Authentication | CLI subscription (claude.ai login), decided on 2026-11-15 |
+| System prompt | Coach prompt injected as `override` in place of Claude Code's, decided on 2026-11-15 |
+| Reference | Manual import of the Garage61 CSV; the API gives no access to laps outside one's team |
+| STT/TTS | **sherpa-onnx 1.13.8** embedded in the process (decided on 2026-11-15): Parakeet v3 for STT, Piper `fr_FR-siwis` for TTS; Kyutai dropped. Measured: STT 0.2 to 0.4 s, first TTS sound 0.1 to 0.2 s on CPU |
+| 1.5 s latency | **Not met cold**: Claude's first word measured at 1.78 s (Haiku, cloud); to be measured again on the PC, see the last section |
 
-## 1. Crates pour le SDK iRacing et les .ibt
+## 1. Crates for the iRacing SDK and .ibt files
 
-Crates existantes, relevées sur crates.io :
+Existing crates, surveyed on crates.io:
 
-| Crate | Version / date | .ibt | État |
+| Crate | Version / date | .ibt | Status |
 |---|---|---|---|
-| `kerb` | 0.4.0 / 2026-09 | non | actif, `windows-sys` 0.61 |
-| `pitwall` | 0.1.0 / 2025-10 | oui | une seule version, pas de dépôt public, impose tokio |
-| `simetry` | 0.2.3 / 2024-02 | oui | multi-simulateurs, `windows` 0.44, plus maintenue |
-| `iracing-telem` | 0.2.1 / 2023-11 | non | API presque entièrement `unsafe` |
-| `itelem` | 0.1.5 / 2023-04 | oui (seulement) | plus maintenue |
-| `iracing` | 0.4.1 / 2020-12 | non | `winapi`, abandonnée |
+| `kerb` | 0.4.0 / 2026-09 | no | active, `windows-sys` 0.61 |
+| `pitwall` | 0.1.0 / 2025-10 | yes | single version, no public repository, requires tokio |
+| `simetry` | 0.2.3 / 2024-02 | yes | multi-simulator, `windows` 0.44, no longer maintained |
+| `iracing-telem` | 0.2.1 / 2023-11 | no | API almost entirely `unsafe` |
+| `itelem` | 0.1.5 / 2023-04 | yes (only) | no longer maintained |
+| `iracing` | 0.4.1 / 2020-12 | no | `winapi`, abandoned |
 
-Aucune ne couvre à la fois le live et les .ibt avec une maintenance active. Le format est petit (header de 112 octets, sous-header disque de 32 octets, descripteurs de variables de 144 octets) et le même parseur sert pour les deux sources. Il est donc implémenté dans `crates/telemetry/src/irsdk.rs`. Les offsets ont été recoupés avec pyirsdk 1.3.7, `simetry` et `kerb` [V]. Je n'ai pas lu le fichier officiel `irsdk_defines.h` : il est réservé aux membres du forum iRacing.
+None covers both live and .ibt with active maintenance. The format is small (112-byte header, 32-byte disk sub-header, 144-byte variable descriptors) and the same parser serves both sources. It is therefore implemented in `crates/telemetry/src/irsdk.rs`. The offsets were cross-checked against pyirsdk 1.3.7, `simetry` and `kerb` [V]. I did not read the official `irsdk_defines.h` file: it is restricted to iRacing forum members.
 
-Points de format retenus :
+Format points adopted:
 
-- Live : on prend le tampon dont le `tickCount` est le plus élevé, on copie la ligne, puis on vérifie que le `tickCount` n'a pas changé pendant la copie (`live.rs`). Les copies passent par `ptr::copy_nonoverlapping`, sans jamais former de `&[u8]` sur une mémoire modifiée par iRacing.
-- Le YAML de session est en Windows-1252, ou en UTF-8 s'il déclare `Encoding: UTF8`. Les deux cas sont gérés.
-- `Lat`, `Lon` et `Alt` n'existent que dans les .ibt. Tout canal autre que `SessionTime`, `Lap`, `LapDistPct` et `Speed` est donc facultatif (valeur `NaN` s'il manque).
-- [S] Les versions récentes du SDK utiliseraient des champs logés dans les `pad` (`tickCountBegin` par tampon) pour détecter les lectures déchirées. On ne s'en sert pas : la double lecture du `tickCount` suffit.
+- Live: take the buffer with the highest `tickCount`, copy the row, then check that the `tickCount` did not change during the copy (`live.rs`). Copies go through `ptr::copy_nonoverlapping`, never forming a `&[u8]` over memory modified by iRacing.
+- The session YAML is in Windows-1252, or in UTF-8 if it declares `Encoding: UTF8`. Both cases are handled.
+- `Lat`, `Lon` and `Alt` only exist in .ibt files. Every channel other than `SessionTime`, `Lap`, `LapDistPct` and `Speed` is therefore optional (`NaN` when missing).
+- [S] Recent SDK versions reportedly use fields placed in the `pad` (`tickCountBegin` per buffer) to detect torn reads. We do not use them: reading `tickCount` twice is enough.
 
 ## 2. gpui
 
-- [V] La crate `gpui` de crates.io est figée en 0.2.2 (2025-10-22). Le README de Zed demande maintenant `gpui_platform`, qui n'est pas publié.
-- [V] `gpui-pre` est un instantané hebdomadaire de Zed publié par Longbridge, 0.3.12 du 2026-11-09. La bibliothèque garde le nom `gpui`. C'est aussi la base de `gpui-component` 0.9.1, la bibliothèque de composants qu'on voudra probablement pour les tableaux et les champs de saisie.
-- [V] Sous Windows : Win32, DirectWrite, Direct3D 11. Une compilation en release demande `fxc.exe` (Windows SDK) ou la variable `GPUI_FXC_PATH`.
-- [V] Sous Linux, pour la CI : `libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1`. L'app a été lancée sous Xvfb avec le Vulkan logiciel (llvmpipe) et s'affiche correctement.
-- Maturité : pré-1.0, changements cassants fréquents, documentation surtout dans le code de Zed. Versions épinglées avec `=`, à mettre à jour en même temps que `gpui-component`.
+- [V] The `gpui` crate on crates.io is frozen at 0.2.2 (2025-10-22). Zed's README now asks for `gpui_platform`, which is not published.
+- [V] `gpui-pre` is a weekly snapshot of Zed published by Longbridge, 0.3.12 of 2026-11-09. The library keeps the name `gpui`. It is also the base of `gpui-component` 0.9.1, the component library we will probably want for tables and input fields.
+- [V] On Windows: Win32, DirectWrite, Direct3D 11. A release build needs `fxc.exe` (Windows SDK) or the `GPUI_FXC_PATH` variable.
+- [V] On Linux, for CI: `libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1`. The app was launched under Xvfb with software Vulkan (llvmpipe) and renders correctly.
+- Maturity: pre-1.0, frequent breaking changes, documentation mostly in Zed's code. Versions pinned with `=`, to be updated together with `gpui-component`.
 
-## 3. ACP : versions et compatibilité
+## 3. ACP: versions and compatibility
 
-- [V] `@agentclientprotocol/claude-agent-acp` **0.107.0** (2026-11-13), sur `@agentclientprotocol/sdk` 2.6.0 et `@anthropic-ai/claude-agent-sdk` 0.3.323. L'ancien paquet `@zed-industries/claude-code-acp` est déprécié depuis la 0.16.2.
-- [V] L'adaptateur répond `protocolVersion: 1` ; il sait aussi parler le brouillon v2 si le client le demande.
-- [V] Des exécutables autonomes Windows embarquent l'adaptateur et `claude.exe`, sans Node. C'est la voie la plus simple à distribuer.
-- [V] Crate `agent-client-protocol` **5.3.0** (2026-11-14), schéma `=1.18.0`, `ProtocolVersion::LATEST = V1` : **compatible**.
-- [V] L'API Rust a changé depuis les exemples courants : `ClientSideConnection` et le trait `Client` à implémenter n'existent plus. Le client se construit par handlers, par exemple `Client.v1().on_receive_notification(...).on_receive_request(...).connect_with(AcpAgent::from_str(cmd)?, ...)`. Il faut la feature `process`, plus `unstable_session_options` pour `configOptions`. Handlers et futures doivent être `Send`, sans `LocalSet`. Le moteur n'impose pas de runtime.
+- [V] `@agentclientprotocol/claude-agent-acp` **0.107.0** (2026-11-13), on `@agentclientprotocol/sdk` 2.6.0 and `@anthropic-ai/claude-agent-sdk` 0.3.323. The old `@zed-industries/claude-code-acp` package has been deprecated since 0.16.2.
+- [V] The adapter answers `protocolVersion: 1`; it can also speak the v2 draft if the client asks for it.
+- [V] Standalone Windows executables bundle the adapter and `claude.exe`, without Node. This is the simplest way to distribute it.
+- [V] `agent-client-protocol` crate **5.3.0** (2026-11-14), schema `=1.18.0`, `ProtocolVersion::LATEST = V1`: **compatible**.
+- [V] The Rust API has changed since the common examples: `ClientSideConnection` and the `Client` trait to implement no longer exist. The client is built from handlers, for example `Client.v1().on_receive_notification(...).on_receive_request(...).connect_with(AcpAgent::from_str(cmd)?, ...)`. It needs the `process` feature, plus `unstable_session_options` for `configOptions`. Handlers and futures must be `Send`, without `LocalSet`. The engine does not impose a runtime.
 
-## 4. Sélection du modèle et restriction des outils
+## 4. Model selection and tool restriction
 
-Modèle [V] (`dist/session-model.js`) :
+Model [V] (`dist/session-model.js`):
 
-- À la création de la session, l'ordre de priorité est : `ANTHROPIC_MODEL`, puis `model` dans settings.json, puis le modèle d'une session reprise, puis le premier modèle disponible.
-- En cours de session, le modèle se change par `session/set_config_option` avec `configId: "model"`. Il n'y a pas de handler `session/set_model`.
-- `configOptions` dans `session/new` fonctionne aussi, mais la fonction est marquée instable.
-- Choix retenu : un sous-processus d'adaptateur par rôle (conversation en piste, analyse), chacun avec son `ANTHROPIC_MODEL`. Les deux sessions sont isolées et le modèle reste configurable par rôle.
+- When the session is created, the priority order is: `ANTHROPIC_MODEL`, then `model` in settings.json, then the model of a resumed session, then the first available model.
+- During a session, the model is changed with `session/set_config_option` and `configId: "model"`. There is no `session/set_model` handler.
+- `configOptions` in `session/new` also works, but the feature is marked unstable.
+- Choice: one adapter subprocess per role (on-track conversation, analysis), each with its own `ANTHROPIC_MODEL`. The two sessions are isolated and the model stays configurable per role.
 
-Outils [V] (`dist/acp-agent.js`) :
+Tools [V] (`dist/acp-agent.js`):
 
-- `_meta.claudeCode.options.tools: []` retire tous les outils intégrés.
-- `allowedTools: ["mcp__coach"]` pré-autorise tout notre serveur. Les outils MCP sont exposés sous le nom `mcp__<serveur>__<outil>`.
-- Le mode `dontAsk` (dans `permissions.defaultMode` ou via `configId: "mode"`) refuse tout ce qui n'est pas pré-autorisé.
-- L'adaptateur n'envoie `session/request_permission` que lorsque les règles de Claude Code donnent « ask ». Notre handler approuve quand même `mcp__coach__*` et refuse le reste, en deuxième barrière.
-- `promptSuggestions: false`, sinon une suggestion de relance est générée à chaque tour.
+- `_meta.claudeCode.options.tools: []` removes all built-in tools.
+- `allowedTools: ["mcp__coach"]` pre-authorizes our whole server. MCP tools are exposed as `mcp__<server>__<tool>`.
+- The `dontAsk` mode (in `permissions.defaultMode` or via `configId: "mode"`) denies anything not pre-authorized.
+- The adapter only sends `session/request_permission` when Claude Code's rules yield "ask". Our handler still approves `mcp__coach__*` and denies the rest, as a second barrier.
+- `promptSuggestions: false`, otherwise a follow-up suggestion is generated on every turn.
 
-Prompt système et CLAUDE.md [V] :
+System prompt and CLAUDE.md [V]:
 
-- Par défaut, `settingSources` vaut `["user","project","local"]` : le CLAUDE.md du répertoire de travail est chargé, mais aussi les réglages utilisateur du poste.
-- Le champ ACP `systemPrompt: {mode: "override", content: [...]}` remplace complètement le prompt de Claude Code.
-- **Décision (2026-11-15)** : le fichier `CLAUDE.md` du coach reste dans le répertoire des sessions, mais le programme le lit et l'injecte en `override`, avec `settingSources: []`. On retire ainsi le prompt système de Claude Code (environ 15 à 25 k tokens avec les outils [S]) et les réglages personnels du poste. C'est le principal levier de latence. Écart assumé par rapport au cahier des charges, où Claude Code chargeait lui-même le CLAUDE.md.
-- [S] À vérifier au jalon 4 : `settingSources: []` ne doit pas couper l'accès au login. Les identifiants sont stockés à part des settings, ce qui devrait suffire.
+- By default, `settingSources` is `["user","project","local"]`: the CLAUDE.md of the working directory is loaded, but so are the machine's user settings.
+- The ACP field `systemPrompt: {mode: "override", content: [...]}` fully replaces Claude Code's prompt.
+- **Decision (2026-11-15)**: the coach's `CLAUDE.md` file stays in the sessions directory, but the program reads it and injects it as `override`, with `settingSources: []`. This removes Claude Code's system prompt (about 15 to 25 k tokens with the tools [S]) and the machine's personal settings. It is the main latency lever. Deliberate departure from the specification, where Claude Code loaded the CLAUDE.md itself.
+- [S] To check at milestone 4: `settingSources: []` must not cut off access to the login. Credentials are stored separately from the settings, which should be enough.
 
-## 5. Transport MCP
+## 5. MCP transport
 
-- [V] L'adaptateur annonce `mcpCapabilities: {http: true, sse: true}`. Le stdio est toujours accepté. MCP par ACP n'est pas annoncé.
-- [V] `rmcp` 3.10.0 fournit `StreamableHttpService` (feature `transport-streamable-http-server`), avec `allowed_hosts` limité au loopback par défaut.
-- Choix : serveur HTTP dans le processus sur `127.0.0.1` à port éphémère, déclaré dans `session/new` comme `{type: "http", name: "coach", url, headers: [{name: "Authorization", value: "Bearer <jeton aléatoire>"}]}`. Le stdio demanderait un exécutable séparé, qui devrait ensuite rejoindre l'état du programme principal.
-- La crate `agent-client-protocol-rmcp` 5.3.0 (sur rmcp ^3.4) existe, à évaluer au jalon 4.
+- [V] The adapter advertises `mcpCapabilities: {http: true, sse: true}`. stdio is always accepted. MCP over ACP is not advertised.
+- [V] `rmcp` 3.10.0 provides `StreamableHttpService` (`transport-streamable-http-server` feature), with `allowed_hosts` restricted to loopback by default.
+- Choice: in-process HTTP server on `127.0.0.1` with an ephemeral port, declared in `session/new` as `{type: "http", name: "coach", url, headers: [{name: "Authorization", value: "Bearer <random token>"}]}`. stdio would require a separate executable, which would then have to reach the main program's state.
+- The `agent-client-protocol-rmcp` 5.3.0 crate (on rmcp ^3.4) exists, to be evaluated at milestone 4.
 
-## 6. Authentification de Claude Code
+## 6. Claude Code authentication
 
-- [V] L'adaptateur utilise les identifiants du CLI `claude` : soit un login claude.ai déjà fait, soit `ANTHROPIC_API_KEY`, `apiKeyHelper` ou une clé Console.
-- **Décision (2026-11-15) : abonnement du CLI**, pour un usage personnel. Aucune clé API.
-- Mise en place : se connecter une fois sur le poste avec le CLI (`claude`, puis `/login`).
-- Le programme retire `ANTHROPIC_API_KEY` de l'environnement du sous-processus de l'adaptateur. Sinon le CLI utiliserait la clé à la place de l'abonnement, et la facturerait.
-- Ne pas passer `--hide-claude-auth` à l'adaptateur : cette option refuse justement les sessions payées par abonnement.
-- Pour mémoire, la documentation de l'Agent SDK n'autorise pas les produits tiers distribués à proposer le login claude.ai. Si l'application devait un jour être distribuée, il faudrait revenir à une clé API.
-- Les limites d'usage de l'abonnement s'appliquent : une session d'analyse en Opus qui tourne à chaque tour consommera vite le quota. À surveiller au jalon 6.
+- [V] The adapter uses the credentials of the `claude` CLI: either an existing claude.ai login, or `ANTHROPIC_API_KEY`, `apiKeyHelper` or a Console key.
+- **Decision (2026-11-15): CLI subscription**, for personal use. No API key.
+- Setup: log in once on the machine with the CLI (`claude`, then `/login`).
+- The program removes `ANTHROPIC_API_KEY` from the environment of the adapter subprocess. Otherwise the CLI would use the key instead of the subscription, and bill it.
+- Do not pass `--hide-claude-auth` to the adapter: that option refuses precisely the sessions paid for by subscription.
+- For the record, the Agent SDK documentation does not allow distributed third-party products to offer claude.ai login. If the application were ever distributed, it would have to go back to an API key.
+- The subscription's usage limits apply: an Opus analysis session running on every lap will quickly use up the quota. To watch at milestone 6.
 
-## 7. CSV Garage61
+## 7. Garage61 CSV
 
-- Colonnes probables, d'après des projets qui parsent ces exports : `Speed, LapDistPct, Lat, Lon, Brake, Throttle, RPM, SteeringWheelAngle, Gear, Clutch, ABSActive, DRSActive, LatAccel, LongAccel, VertAccel, Yaw, YawRate, PositionType`. [S] : pas vérifié sur un export réel, garage61.net n'était pas joignable depuis cette session. `YawRate` est la colonne la moins sûre.
-- Absents : `SessionTime`, `LapDist` et le numéro du tour. Le temps se déduit de l'index (60 Hz) ; l'alignement se fait sur `LapDistPct`, qui est bien présent. Les derniers pourcents du tour manquent parfois.
-- Si `YawRate` manque mais que `Yaw` est présent : dériver `Yaw` déroulé dans le temps.
-- Si `YawRate` et `LatAccel` manquent :
-  1. Projeter Lat/Lon en mètres locaux.
-  2. Rééchantillonner selon l'abscisse curviligne.
-  3. Lisser (Savitzky-Golay ; la résolution de Lat/Lon en float32 est d'environ 0,4 m).
-  4. Calculer la courbure κ, puis `YawRate ≈ v·κ` et `LatAccel ≈ v²·κ`.
+- Likely columns, based on projects that parse these exports: `Speed, LapDistPct, Lat, Lon, Brake, Throttle, RPM, SteeringWheelAngle, Gear, Clutch, ABSActive, DRSActive, LatAccel, LongAccel, VertAccel, Yaw, YawRate, PositionType`. [S]: not checked on a real export, garage61.net was not reachable from this session. `YawRate` is the least certain column.
+- Missing: `SessionTime`, `LapDist` and the lap number. Time is derived from the index (60 Hz); alignment is done on `LapDistPct`, which is present. The last few percent of the lap are sometimes missing.
+- If `YawRate` is missing but `Yaw` is present: differentiate the unwrapped `Yaw` over time.
+- If both `YawRate` and `LatAccel` are missing:
+  1. Project Lat/Lon to local meters.
+  2. Resample along the arc length.
+  3. Smooth (Savitzky-Golay; the resolution of Lat/Lon as float32 is about 0.4 m).
+  4. Compute the curvature κ, then `YawRate ≈ v·κ` and `LatAccel ≈ v²·κ`.
 
-  Cette estimation ignore la dérive, le dévers et la gravité : elle suffit pour comparer des trajectoires, pas pour mesurer un survirage fin.
-- La détection des virages du crate `telemetry` utilise déjà `YawRate / Speed`, avec repli sur `LatAccel / Speed²`. Les deux voies sont testées.
+  This estimate ignores slip, camber and gravity: it is good enough to compare lines, not to measure fine oversteer.
+- Corner detection in the `telemetry` crate already uses `YawRate / Speed`, falling back to `LatAccel / Speed²`. Both paths are tested.
 
-## 8. API Garage61
+## 8. Garage61 API
 
-- [V, via la documentation recopiée dans le wrapper `garage61api`] Base `https://garage61.net/api/v1`, `Authorization: Bearer <jeton>` (jeton personnel ou OAuth2 PKCE, scope `driving_data`). Endpoints : `GET /laps` (filtres voiture, piste, pilotes, équipes) et `GET /laps/{id}/csv`.
-- [V] « This method only returns laps driven yourself or your teammates… For privacy reasons, no global lap search is available. » Il n'y a **pas d'accès API aux tours de pilotes hors équipe**.
-- [S] Les data packs publiés par des équipes ont un endpoint dédié (`/teams/{team}/datapacks/...`). Qu'un simple abonné puisse les télécharger par l'API n'est pas vérifié.
-- La page développeur de garage61.net est une application JavaScript : sa documentation n'est pas lisible sans navigateur, et n'a donc pas pu être revérifiée depuis la session.
-- Décision : **import manuel du CSV** au jalon 2. L'import par l'API pour ses propres tours et ceux de son équipe viendra en option, avec le jeton dans `GARAGE61_TOKEN`.
+- [V, via the documentation copied into the `garage61api` wrapper] Base `https://garage61.net/api/v1`, `Authorization: Bearer <token>` (personal token or OAuth2 PKCE, `driving_data` scope). Endpoints: `GET /laps` (filters on car, track, drivers, teams) and `GET /laps/{id}/csv`.
+- [V] "This method only returns laps driven yourself or your teammates… For privacy reasons, no global lap search is available." There is **no API access to laps of drivers outside one's team**.
+- [S] Data packs published by teams have a dedicated endpoint (`/teams/{team}/datapacks/...`). Whether a plain subscriber can download them through the API is not verified.
+- The garage61.net developer page is a JavaScript application: its documentation cannot be read without a browser, and so could not be rechecked from the session.
+- Decision: **manual CSV import** at milestone 2. API import of one's own laps and one's team's will come later as an option, with the token in `GARAGE61_TOKEN`.
 
-## 9. STT et TTS : sherpa-onnx (décision du 2026-11-15)
+## 9. STT and TTS: sherpa-onnx (decision of 2026-11-15)
 
-Kyutai (moshi-server) est écarté : pas de prise en charge officielle de Windows, un module TTS en Python embarqué, CUDA obligatoire et un serveur séparé. Les notes sur son protocole sont dans l'historique git de ce fichier.
+Kyutai (moshi-server) is ruled out: no official Windows support, a TTS module with embedded Python, CUDA required and a separate server. The notes on its protocol are in the git history of this file.
 
-Retenu : **sherpa-onnx**, embarqué dans le processus, sans serveur, sans Python et sans WSL.
+Chosen: **sherpa-onnx**, embedded in the process, with no server, no Python and no WSL.
 
-### Version : 1.13.8, pas 2.x
+### Version: 1.13.8, not 2.x
 
-- [V] Depuis la 2.0, sherpa-onnx n'embarque plus le phonémiseur espeak-ng pour les voix Piper/VITS : `--vits-data-dir` est ignoré, et la synthèse échoue faute de `phoneme_codepoints` fournis par un phonémiseur externe. Testé avec la 2.0.1.
-- **Décision : épingler la crate `sherpa-onnx` en `=1.13.8`**, dernière version 1.x, qui phonémise encore elle-même. Son API Rust est la même que celle de la 2.0.1 pour notre usage.
-- Pour passer plus tard à la 2.x, il faudra un phonémiseur externe. Candidats : la crate `espeak-ng` (portage Rust pur, 0.2.0) ou des liaisons à la bibliothèque C.
-- Licence : espeak-ng est sous GPL-3, et il est lié dans la bibliothèque sherpa-onnx 1.x. Aucun problème pour un usage personnel ; à revoir si l'application devait être distribuée.
+- [V] Since 2.0, sherpa-onnx no longer bundles the espeak-ng phonemizer for Piper/VITS voices: `--vits-data-dir` is ignored, and synthesis fails for lack of `phoneme_codepoints` supplied by an external phonemizer. Tested with 2.0.1.
+- **Decision: pin the `sherpa-onnx` crate at `=1.13.8`**, the last 1.x version, which still phonemizes on its own. Its Rust API is the same as 2.0.1 for our use.
+- Moving to 2.x later will require an external phonemizer. Candidates: the `espeak-ng` crate (pure Rust port, 0.2.0) or bindings to the C library.
+- License: espeak-ng is GPL-3, and it is linked into the sherpa-onnx 1.x library. No problem for personal use; to be reviewed if the application were ever distributed.
 
-### Distribution de la bibliothèque
+### Library distribution
 
-- [V] Le build script de `sherpa-onnx-sys` télécharge une bibliothèque précompilée depuis les releases GitHub (statique par défaut). Sur un poste avec un accès Internet normal, `cargo build` suffit.
-- [V] Les mêmes bibliothèques sont publiées sur npm (`sherpa-onnx-linux-x64`, `sherpa-onnx-win-x64`) et sur PyPI (`sherpa-onnx-core`). Pour s'en servir : feature `shared`, plus `SHERPA_ONNX_LIB_DIR` qui pointe vers le dossier de la bibliothèque. C'est ce qui a servi aux mesures ci-dessous, les releases GitHub étant inaccessibles depuis la session cloud.
+- [V] The `sherpa-onnx-sys` build script downloads a prebuilt library from the GitHub releases (static by default). On a machine with normal Internet access, `cargo build` is enough.
+- [V] The same libraries are published on npm (`sherpa-onnx-linux-x64`, `sherpa-onnx-win-x64`) and on PyPI (`sherpa-onnx-core`). To use them: the `shared` feature, plus `SHERPA_ONNX_LIB_DIR` pointing to the library folder. This is what was used for the measurements below, since the GitHub releases were unreachable from the cloud session.
 
-### Modèles français (vérifiés sur Hugging Face, dépôts `csukuangfj/...`)
+### French models (verified on Hugging Face, `csukuangfj/...` repositories)
 
-| Usage | Modèle | Taille | Licence |
+| Use | Model | Size | License |
 |---|---|---|---|
-| STT | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` (25 langues européennes) | ~670 Mo | CC-BY 4.0 (NVIDIA) [S] |
-| STT, alternative | `sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8` | plus petit | [S] |
-| TTS | `vits-piper-fr_FR-siwis-medium` (voix féminine) | 63 Mo | CC-BY 4.0 [V] |
-| TTS | `vits-piper-fr_FR-tom-medium` (voix masculine) | 61 Mo | **AGPLv3** [V] : à éviter |
-| TTS | autres voix Piper `fr_FR` : gilles, mls, upmc, tjiho, miro | | à vérifier une par une |
-| TTS | Kokoro multilingue, voix `ff_siwis` (locuteur 30) | ~300 Mo [S] | Apache 2.0 [S] |
+| STT | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` (25 European languages) | ~670 MB | CC-BY 4.0 (NVIDIA) [S] |
+| STT, alternative | `sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8` | smaller | [S] |
+| TTS | `vits-piper-fr_FR-siwis-medium` (female voice) | 63 MB | CC-BY 4.0 [V] |
+| TTS | `vits-piper-fr_FR-tom-medium` (male voice) | 61 MB | **AGPLv3** [V]: avoid |
+| TTS | other Piper `fr_FR` voices: gilles, mls, upmc, tjiho, miro | | to check one by one |
+| TTS | multilingual Kokoro, voice `ff_siwis` (speaker 30) | ~300 MB [S] | Apache 2.0 [S] |
 
-### Mesures (session cloud, 4 vCPU partagés, sans GPU, 4 threads)
+### Measurements (cloud session, 4 shared vCPUs, no GPU, 4 threads)
 
-| Étape | Mesure |
+| Step | Measurement |
 |---|---|
-| Chargement TTS Piper / STT Parakeet | 1,0 s / 2,1 s, une fois au démarrage |
-| TTS : premier bloc audio, phrase de 2 à 3,4 s | 80 à 180 ms (environ 20 fois plus rapide que le temps réel) |
-| STT : phrase de 2 à 3,4 s | 210 à 360 ms |
-| STT : enregistrement réel de 5 s (`test_wavs/fr.wav`) | 415 ms, transcription exacte |
+| Loading Piper TTS / Parakeet STT | 1.0 s / 2.1 s, once at startup |
+| TTS: first audio chunk, 2 to 3.4 s sentence | 80 to 180 ms (about 20 times faster than real time) |
+| STT: 2 to 3.4 s sentence | 210 to 360 ms |
+| STT: real 5 s recording (`test_wavs/fr.wav`) | 415 ms, exact transcription |
 
-Phrases de coaching synthétisées puis retranscrites :
+French coaching sentences synthesized then transcribed back (English glosses in parentheses):
 
-- « Freine cinq mètres plus tard au T5. » → « Freine 5 mètres plus tard au T5. »
-- « Tu perds deux dixièmes au virage quatre, reprends les gaz plus tôt. » → « Tu perds deux dixièmes au virage 4. Reprends les gaz plus tôt. »
-- « Je n'ai plus de rotation au T5, qu'est-ce que je change ? » → identique.
+- « Freine cinq mètres plus tard au T5. » → « Freine 5 mètres plus tard au T5. » (Brake five meters later at T5.)
+- « Tu perds deux dixièmes au virage quatre, reprends les gaz plus tôt. » → « Tu perds deux dixièmes au virage 4. Reprends les gaz plus tôt. » (You're losing two tenths in corner four, get on the throttle earlier.)
+- « Je n'ai plus de rotation au T5, qu'est-ce que je change ? » → identical. (I've lost rotation at T5, what should I change?)
 
-Parakeet écrit les nombres en chiffres, ce qui facilite le repérage des virages (« T5 », « virage 4 »). Un PC de bureau récent devrait faire mieux que ces vCPU partagés.
+Parakeet writes numbers as digits, which makes it easier to identify corners ("T5", "virage 4"). A recent desktop PC should do better than these shared vCPUs.
 
-### Usage prévu
+### Planned use
 
-- STT en push-to-talk : on accumule l'audio pendant l'appui et on le transcrit d'un coup au relâchement.
-- TTS phrase par phrase, au fil des `agent_message_chunk`.
-- Le crate `voice` exposera des traits `Stt` et `Tts` pour pouvoir brancher d'autres moteurs : voix Windows SAPI/WinRT en repli, Kokoro pour comparer.
-- Capture et lecture audio : `cpal` (WASAPI sous Windows).
-- Les modèles sont téléchargés au premier lancement depuis Hugging Face dans le répertoire de données de l'utilisateur, et non versionnés.
-- Les téléchargements utilisent le magasin de certificats du système (`ureq` avec `platform-verifier`) plutôt qu'une liste intégrée : ils passent derrière un proxy d'entreprise qui inspecte le TLS. Vérifié depuis la session cloud, qui passe par un tel proxy.
-- Windows : la bibliothèque statique est compilée avec le runtime C statique (`/MT`) ; `.cargo/config.toml` active `+crt-static` pour la cible MSVC. Vérifié : la CI Windows compile, lie et passe les tests avec la bibliothèque statique (run du 2026-11-15, commit 08e9af8).
+- Push-to-talk STT: audio is accumulated while the button is held and transcribed in one go on release.
+- TTS sentence by sentence, as `agent_message_chunk` events arrive.
+- The `voice` crate will expose `Stt` and `Tts` traits so other engines can be plugged in: Windows SAPI/WinRT voices as a fallback, Kokoro for comparison.
+- Audio capture and playback: `cpal` (WASAPI on Windows).
+- Models are downloaded on first launch from Hugging Face into the user's data directory, and are not versioned.
+- Downloads use the system certificate store (`ureq` with `platform-verifier`) rather than a bundled list: they work behind a corporate proxy that inspects TLS. Verified from the cloud session, which goes through such a proxy.
+- Windows: the static library is compiled with the static C runtime (`/MT`); `.cargo/config.toml` enables `+crt-static` for the MSVC target. Verified: Windows CI compiles, links and passes the tests with the static library (run of 2026-11-15, commit 08e9af8).
 
-## 10. Entrées : push-to-talk en arrière-plan
+## 10. Input: background push-to-talk
 
-- [V] `gilrs` 0.11 utilise par défaut Windows Gaming Input, qui « requires an in focus window to be associated with the process to receive events » (README de gilrs). Inutilisable pendant qu'iRacing a le focus. Son backend XInput fonctionne en arrière-plan mais ne voit que les manettes Xbox, pas les volants.
-- Retenu sous Windows : **DirectInput 8**, coopération `DISCL_BACKGROUND | DISCL_NONEXCLUSIVE`, sur une fenêtre cachée de premier niveau. Classe `DI8DEVCLASS_GAMECTRL` (volants, pédaliers, boîtiers, joysticks, manettes). La crate `windows` n'expose pas le format prédéfini `c_dfDIJoystick2` : format maison de 128 boutons et 4 chapeaux, tous facultatifs.
-- Clavier et souris : `device_query` (`GetAsyncKeyState` sous Windows, X11 sous Linux), lecture globale indépendante du focus.
-- Linux (développement) : `gilrs` (evdev, fonctionne en arrière-plan).
-- Vérifié : la capture et le suivi du push-to-talk fonctionnent avec le vrai clavier (X11, sous Xvfb + xdotool) ; le code DirectInput se compile et passe clippy pour la cible Windows. **Non vérifié** sur un vrai volant ou boîtier : à tester sur le PC.
+- [V] `gilrs` 0.11 uses Windows Gaming Input by default, which "requires an in focus window to be associated with the process to receive events" (gilrs README). Unusable while iRacing has focus. Its XInput backend works in the background but only sees Xbox controllers, not wheels.
+- Chosen on Windows: **DirectInput 8**, cooperative level `DISCL_BACKGROUND | DISCL_NONEXCLUSIVE`, on a hidden top-level window. Class `DI8DEVCLASS_GAMECTRL` (wheels, pedals, button boxes, joysticks, gamepads). The `windows` crate does not expose the predefined `c_dfDIJoystick2` format: custom format with 128 buttons and 4 hats, all optional.
+- Keyboard and mouse: `device_query` (`GetAsyncKeyState` on Windows, X11 on Linux), global reading independent of focus.
+- Linux (development): `gilrs` (evdev, works in the background).
+- Verified: push-to-talk capture and tracking work with the real keyboard (X11, under Xvfb + xdotool); the DirectInput code compiles and passes clippy for the Windows target. **Not verified** on a real wheel or button box: to be tested on the PC.
 
-## 11. Planification (jalon 6)
+## 11. Planning (milestone 6)
 
-- Modèle de l'analyse : `ANTHROPIC_MODEL=sonnet` pour le sous-processus d'analyse, réflexion non coupée (pas de contrainte de latence : l'analyse tourne en arrière-plan).
-- Deux sous-processus d'adaptateur (conversation, analyse), chacun avec son point d'accès MCP. Le modèle de chaque rôle reste configurable (`--model`, `--analysis-model`).
-- Non mesuré avec Claude : durée réelle d'une analyse et consommation de quota par tour. Vérifié avec un faux agent : déclenchement, appel réel d'`update_plan` par le serveur MCP, couche du coach appliquée, plan du pilote intact.
+- Analysis model: `ANTHROPIC_MODEL=sonnet` for the analysis subprocess, thinking not disabled (no latency constraint: the analysis runs in the background).
+- Two adapter subprocesses (conversation, analysis), each with its own MCP endpoint. Each role's model stays configurable (`--model`, `--analysis-model`).
+- Not measured with Claude: actual duration of an analysis and quota consumption per lap. Verified with a mock agent: triggering, real `update_plan` call through the MCP server, coach layer applied, driver plan untouched.
 
-## 12. Latence de la conversation
+## 12. Conversation latency
 
-### Mesure réelle (2026-11-15)
+### Actual measurement (2026-11-15)
 
-Mesurée avec l'exemple `probe` du crate `coach`, depuis la session cloud, adaptateur 0.107.0, Haiku, réflexion coupée, prompt du coach en `override`, sans outils :
+Measured with the `probe` example of the `coach` crate, from the cloud session, adapter 0.107.0, Haiku, thinking disabled, coach prompt as `override`, no tools:
 
-| Étape | Mesure |
+| Step | Measurement |
 |---|---|
-| Démarrage de l'adaptateur jusqu'à la session prête (`initialize` + `session/new`) | 2,6 s, payé une fois au lancement |
-| Envoi du message → premier `agent_message_chunk` | **1,78 s** |
-| Envoi du message → fin du tour | 2,13 s |
+| Adapter startup until the session is ready (`initialize` + `session/new`) | 2.6 s, paid once at launch |
+| Message sent → first `agent_message_chunk` | **1.78 s** |
+| Message sent → end of turn | 2.13 s |
 
-Une seule mesure, à froid (premier message de la session, cache de prompt vide), depuis un conteneur cloud : à refaire sur le PC du pilote, où le réseau et le cache diffèrent. La réponse respectait le prompt du coach (deux phrases, en français, sans mise en forme).
+A single cold measurement (first message of the session, empty prompt cache), from a cloud container: to be repeated on the driver's PC, where the network and cache differ. The reply followed the coach prompt (two sentences, in French, no formatting).
 
-Note : cette mesure n'était pas prévue. L'adaptateur avait été lancé avec un environnement vide pour vérifier seulement `initialize` et `session/new` sans identifiants ; l'infrastructure réseau de la session cloud a authentifié l'appel d'elle-même. Aucun autre appel réel n'a été fait.
+Note: this measurement was not planned. The adapter had been started with an empty environment to check only `initialize` and `session/new` without credentials; the cloud session's network infrastructure authenticated the call on its own. No other real call was made.
 
 ### Budget
 
-| Étape | Estimation ou mesure |
+| Step | Estimate or measurement |
 |---|---|
-| STT : du relâchement du bouton au texte final | **mesuré** : 0,2 à 0,4 s (Parakeet v3 int8, CPU) |
-| Claude : premier mot | **mesuré** : 1,8 s à froid depuis le cloud ; 1 à 1,5 s attendu avec cache chaud |
-| TTS : de la première phrase au premier son | **mesuré** : 0,08 à 0,18 s (Piper, CPU), plus la latence de la sortie audio |
-| **Total** | **2,1 à 2,4 s à froid** ; 1,4 à 2 s attendu avec cache chaud |
+| STT: from button release to final text | **measured**: 0.2 to 0.4 s (Parakeet v3 int8, CPU) |
+| Claude: first word | **measured**: 1.8 s cold from the cloud; 1 to 1.5 s expected with a warm cache |
+| TTS: from the first sentence to the first sound | **measured**: 0.08 to 0.18 s (Piper, CPU), plus audio output latency |
+| **Total** | **2.1 to 2.4 s cold**; 1.4 to 2 s expected with a warm cache |
 
-**La cible de 1,5 s n'est pas tenue** sur la seule mesure disponible ; Claude représente l'essentiel du délai. Leviers, du plus simple au plus lourd :
+**The 1.5 s target is not met** on the only measurement available; Claude accounts for most of the delay. Levers, from simplest to heaviest:
 
-- l'accusé court du coach (« Je regarde le T5. ») est dit dès le premier morceau : il masque la durée des appels d'outils, pas celle du premier mot ;
-- garder la session chaude et le prompt système stable pour profiter du cache de prompt (premier message plus lent que les suivants) ;
-- jouer un accusé local pré-enregistré dès la fin de la parole (« Reçu. »), sans attendre Claude ;
-- en dernier recours, appeler l'API Messages directement pour la conversation, en gardant ACP pour l'analyse.
+- the coach's short acknowledgement ("Looking at T5.") is spoken as soon as the first chunk arrives: it hides the duration of tool calls, not that of the first word;
+- keep the session warm and the system prompt stable to benefit from the prompt cache (first message slower than the following ones);
+- play a pre-recorded local acknowledgement as soon as speech ends ("Copy."), without waiting for Claude;
+- as a last resort, call the Messages API directly for the conversation, keeping ACP for the analysis.
 
-L'interface affiche la latence du premier mot à chaque tour ; la mesure sur le PC du pilote décidera.
+The interface shows the first-word latency on every turn; the measurement on the driver's PC will decide.
