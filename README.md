@@ -15,7 +15,18 @@ Voice pipeline: STT → Claude (via ACP) → TTS. STT and TTS run in-process wit
 | 5. Push-to-talk STT, voice conversation | **done** |
 | 6. Automatic planning of the next lap | **done** |
 
-![Synthetic session with the mock agent: corner deltas, cues prepared by the analysis session, conversation](docs/screenshot.png)
+## Interface
+
+Three screens, switched with the tabs at the top:
+
+- **Coaching**: the screen to keep next to (or on top of) the game. Coach state lights (*Listening*, *Thinking*, *Speaking*, *Analyzing*, *Idle*), rolling level meters for the coach's voice and the microphone, the reference lap with a quick **Load lap…** button, the live delta, the delta per corner (last lap, best lap, active cue) and the upcoming and last spoken cues. On Windows, **Pin on top** keeps this screen above the game in a compact 460 × 680 window (saved in the settings); **Unpin** releases it.
+- **Chat**: what a chat interface would show. The conversation (typed or spoken), the coach's tool calls, each analysis summary and the analysis session's tool calls, the laps, and the detailed corner metrics (braking, throttle, trail braking, rotation, coasting).
+- **Setup**: session, reference and plan files, voice settings (push-to-talk button, spoken replies, voice language, microphone and coach output), automatic planning, always on top, and the connection status (telemetry, STT, TTS, ACP agent, MCP server).
+
+<p>
+<img src="docs/screenshot-coaching.png" alt="Coaching screen at the compact size: the coach is speaking" width="300">
+<img src="docs/screenshot-chat.png" alt="Chat screen: conversation, analysis summaries, laps and corner metrics" width="560">
+</p>
 
 The conclusions of the preliminary checks (crates, versions, ACP, MCP, authentication, Garage61, STT/TTS, latency) are in [docs/verifications.md](docs/verifications.md).
 
@@ -56,7 +67,7 @@ simcoach --synthetic --reference "Garage 61 - ... .csv"   # with a reference
 simcoach --write-synthetic-reference <folder>             # synthetic reference (CSV)
 ```
 
-The reference can also be chosen in the interface.
+The reference can also be chosen in the interface (**Load lap…** on the Coaching screen).
 
 ```sh
 simcoach ... --plan plans/synthetic.toml     # cue plan
@@ -131,7 +142,7 @@ The voice language is English or French. It sets:
 - the language Claude replies in, for the conversation and for the cues it writes (`say`, `update_plan`): a "Language" section is appended to both system prompts at startup;
 - speech recognition needs no setting: Parakeet v3 recognizes both languages.
 
-Choose it with the **Voice** button in the voice settings (applies on the next launch; saved in `settings.toml` as `language = "en"` or `"fr"`), or with `--language en|fr` on the command line, which overrides the setting. English is the default.
+Choose it with the **Voice** button on the Setup screen (applies on the next launch; saved in `settings.toml` as `language = "en"` or `"fr"`), or with `--language en|fr` on the command line, which overrides the setting. English is the default.
 
 Everything else (interface, logs, plan files, prompts, the `[Context]` block sent to Claude) is in English. A French `CLAUDE.md` left by v0.1.0 in the conversation session folder is renamed `CLAUDE.v0.1.md` and replaced by the English default.
 
@@ -236,7 +247,7 @@ cargo run -p coach --example probe -- --model haiku --prompt "Hello"
 
 ## Voice conversation (push-to-talk)
 
-The push-to-talk button is set in the interface, as in a game: click the edit button, then press any key, mouse button (except left click), wheel, button box, joystick or gamepad button, or hat (POV) direction. Escape cancels. The setting is saved in `%APPDATA%\simcoach\config\settings.toml` (`SIMCOACH_SETTINGS` for a different file).
+The push-to-talk button is set on the Setup screen, as in a game: click the edit button, then press any key, mouse button (except left click), wheel, button box, joystick or gamepad button, or hat (POV) direction. Escape cancels. The setting is saved in `%APPDATA%\simcoach\config\settings.toml` (`SIMCOACH_SETTINGS` for a different file).
 
 Inputs are read **in the background**, while iRacing has focus:
 
@@ -248,13 +259,13 @@ Sequence:
 1. press: the coach goes quiet, its current reply is interrupted, the microphone records (300 ms of pre-roll so the first syllable is not cut);
 2. release: transcription by Parakeet (downloaded on first launch, about 670 MB);
 3. the text is sent to Claude with the driver's context;
-4. the reply is split into sentences as it streams; each sentence is spoken as soon as it is complete, through the cue engine, so never in a braking zone. A toggle in the conversation panel mutes spoken replies (the text is still shown).
+4. the reply is split into sentences as it streams; each sentence is spoken as soon as it is complete, through the cue engine, so never in a braking zone. A toggle in the Setup screen mutes spoken replies (the text is still shown).
 
 The interface shows the latency of the last voice turn: end of speech → text → Claude's first word → first sound.
 
 ### Audio devices
 
-The conversation panel has a **Microphone** row (push-to-talk input) and a **Coach output** row (the coach's voice: cues and spoken replies). **Change…** lists the devices (WASAPI endpoints on Windows) with **System default** first; the selected device opens immediately, without a restart, and is saved in `settings.toml` by its id (`[microphone]` / `[output]` with `id` and `name`). For example, the coach can speak in the headset while the game sound goes to the speakers.
+The Setup screen has a **Microphone** row (push-to-talk input) and a **Coach output** row (the coach's voice: cues and spoken replies). **Change…** lists the devices (WASAPI endpoints on Windows) with **System default** first; the selected device opens immediately, without a restart, and is saved in `settings.toml` by its id (`[microphone]` / `[output]` with `id` and `name`). For example, the coach can speak in the headset while the game sound goes to the speakers.
 
 If the saved device is not connected at startup, the program falls back to the system default and says so in the conversation. If a device cannot be opened when chosen, the previous one stays active.
 
@@ -265,10 +276,10 @@ A second ACP session, separate from the conversation, plays the race engineer (S
 1. the program sends it the summary: lap time, session overview (`get_session_overview`, attached to the message to save a call) and active coach cues;
 2. Claude digs into the most costly corners (`get_corner_summary`, `get_corner_trace` when needed);
 3. it replaces the **coach cue layer** with `update_plan`: at most three cues, placed before the braking points, expiring after two laps;
-4. its one-sentence summary is shown in the cues panel.
+4. its one-sentence summary is shown on the Coaching screen and added to the Chat log, with the analysis session's tool calls.
 
-The driver's plan (TOML file) is never modified: the two layers are resolved separately and spoken together, with coach cues marked as such in the interface. A cue unchanged from one plan to the next keeps its state (a `once` cue already spoken is not repeated). A lap completed during an analysis is ignored; the analysis blocks neither the fast loop nor the conversation. Each session has its own MCP endpoint, so the tool logs stay separate.
+The driver's plan (TOML file) is never modified: the two layers are resolved separately and spoken together, with coach cues listed alongside the driver's. A cue unchanged from one plan to the next keeps its state (a `once` cue already spoken is not repeated). A lap completed during an analysis is ignored; the analysis blocks neither the fast loop nor the conversation. Each session has its own MCP endpoint, so the tool logs stay separate.
 
-The engineer's prompt is in `%LOCALAPPDATA%\simcoach\data\sessions\analysis\CLAUDE.md` (created from `crates/coach/prompts/ANALYSIS.md`). An auto toggle in the cues panel enables or suspends planning (the setting is saved).
+The engineer's prompt is in `%LOCALAPPDATA%\simcoach\data\sessions\analysis\CLAUDE.md` (created from `crates/coach/prompts/ANALYSIS.md`). A toggle on the Setup screen (and on the Chat screen) enables or suspends planning (the setting is saved).
 
 Cost: one analysis per valid lap with Sonnet, on the subscription. Over a long session, this is the main quota consumer; `--no-planning` or turning the auto toggle off stops it.

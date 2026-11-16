@@ -159,6 +159,11 @@ impl Speaker {
         self.pending.load(Ordering::Acquire) || self.sink.is_playing()
     }
 
+    /// Level of the coach's voice being played, 0..1.
+    pub fn level(&self) -> f32 {
+        self.sink.level()
+    }
+
     /// Sentence duration: exact if cached, estimated otherwise.
     pub fn duration(&self, text: &str) -> f64 {
         self.cache

@@ -22,6 +22,8 @@ pub struct Settings {
     pub microphone: Option<DeviceChoice>,
     /// Output for the coach's voice; system default if absent.
     pub output: Option<DeviceChoice>,
+    /// Compact coaching window kept on top of the game (Windows).
+    pub always_on_top: bool,
 }
 
 /// An audio device saved by id; the name is for display (and for the log
@@ -47,6 +49,7 @@ impl Default for Settings {
             language: Language::default(),
             microphone: None,
             output: None,
+            always_on_top: false,
         }
     }
 }
@@ -108,6 +111,7 @@ mod tests {
                 name: "Headset microphone".into(),
             }),
             output: None,
+            always_on_top: true,
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);

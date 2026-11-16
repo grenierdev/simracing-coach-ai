@@ -13,6 +13,8 @@ pub enum Who {
     Coach,
     Tool,
     System,
+    /// Summary of the analysis session (planning of the next lap).
+    Analysis,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +58,15 @@ impl Chat {
         matches!(self.status, Some(AgentStatus::Busy))
     }
 
+    /// Adds the summary of a new analysis, once per lap.
+    pub fn analysis_message(&mut self, lap: i32, summary: &str, secs: f64) {
+        self.push(
+            Who::Analysis,
+            format!("Lap {lap} ({secs:.0} s): {}", summary.trim()),
+            None,
+        );
+    }
+
     pub fn system_message(&mut self, text: impl Into<String>) {
         self.push(Who::System, text.into(), None);
     }
@@ -73,13 +84,17 @@ impl Chat {
                 self.status = Some(s);
             }
             CoachEvent::Chunk { turn, text } => {
-                if let Some(last) = self.entries.last_mut()
-                    && last.who == Who::Coach
-                    && last.turn == Some(turn)
-                {
-                    last.text.push_str(&text);
-                } else {
-                    self.push(Who::Coach, text, Some(turn));
+                // Continue the reply of this turn, unless something of the same
+                // turn (a tool call) came in between. Lines from elsewhere (the
+                // analysis session, the system) do not split the reply.
+                let open = self
+                    .entries
+                    .iter()
+                    .rposition(|e| e.turn == Some(turn))
+                    .filter(|&i| self.entries[i].who == Who::Coach);
+                match open {
+                    Some(i) => self.entries[i].text.push_str(&text),
+                    None => self.push(Who::Coach, text, Some(turn)),
                 }
             }
             CoachEvent::ToolCall { turn, id, name, .. } => {
@@ -113,11 +128,17 @@ impl Chat {
         if log.len() < self.tools_seen {
             self.tools_seen = 0;
         }
-        for t in log[self.tools_seen..]
-            .iter()
-            .filter(|t| t.source.is_empty() || t.source == "conversation")
-        {
+        for t in &log[self.tools_seen..] {
             let mark = if t.ok { "" } else { " (error)" };
+            if t.source == "analysis" {
+                // Tools of the analysis session: no ACP id to match, one line each.
+                self.push(
+                    Who::Tool,
+                    format!("analysis · {} · {:.0} ms{mark}", t.name, t.millis),
+                    None,
+                );
+                continue;
+            }
             let text = format!("{} · {:.0} ms{mark}", t.name, t.millis);
             let pending = self.entries.iter_mut().rev().take(20).find(|e| {
                 e.tool
@@ -235,6 +256,30 @@ mod tests {
             millis: 3.2,
         }]);
         assert_eq!(c.entries.len(), 4, "no duplicate");
+    }
+
+    #[test]
+    fn analysis_line_does_not_split_a_reply() {
+        let mut c = Chat::default();
+        c.driver_message("where am I losing time?", 1);
+        c.apply(CoachEvent::Chunk {
+            turn: 1,
+            text: "The ".into(),
+        });
+        c.analysis_message(3, "T6: cue added.", 12.0);
+        c.apply(CoachEvent::Chunk {
+            turn: 1,
+            text: "costliest is T6.".into(),
+        });
+        let texts: Vec<&str> = c.entries.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "where am I losing time?",
+                "The costliest is T6.",
+                "Lap 3 (12 s): T6: cue added."
+            ]
+        );
     }
 
     #[test]
