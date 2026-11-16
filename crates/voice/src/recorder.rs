@@ -1,8 +1,8 @@
-//! Capture du micro pour le push-to-talk.
+//! Microphone capture for push-to-talk.
 //!
-//! Le flux d'entrée reste ouvert en permanence ; un tampon circulaire garde les
-//! 300 dernières millisecondes pour ne pas couper la première syllabe quand le
-//! pilote parle en même temps qu'il appuie.
+//! The input stream stays open at all times; a ring buffer keeps the last
+//! 300 milliseconds so the first syllable is not cut when the driver starts
+//! talking as they press the button.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,7 @@ pub struct Capture {
     preroll: VecDeque<f32>,
     buf: Vec<f32>,
     rate: u32,
-    /// Niveau RMS du dernier bloc, 0..1.
+    /// RMS level of the last block, 0..1.
     level: f32,
 }
 
@@ -31,7 +31,7 @@ impl Capture {
         }
     }
 
-    /// Ajoute des échantillons mono.
+    /// Adds mono samples.
     pub fn push(&mut self, mono: &[f32]) {
         if !mono.is_empty() {
             let rms = (mono.iter().map(|x| x * x).sum::<f32>() / mono.len() as f32).sqrt();
@@ -73,7 +73,7 @@ impl Capture {
     }
 }
 
-/// Source d'enregistrement du push-to-talk (micro réel, ou faux en test).
+/// Push-to-talk recording source (real microphone, or a fake in tests).
 pub trait Microphone: Send + Sync {
     fn start(&self);
     fn stop(&self) -> Audio;
@@ -99,7 +99,7 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// Ouvre le micro par défaut.
+    /// Opens the default microphone.
     pub fn open() -> Result<Self, VoiceError> {
         let capture: Arc<Mutex<Capture>> = Arc::default();
         let (tx, rx) = crossbeam_channel::bounded::<Result<String, String>>(1);
@@ -129,8 +129,10 @@ impl Recorder {
                 device,
                 _thread: thread,
             }),
-            Ok(Err(e)) => Err(VoiceError::Output(format!("micro : {e}"))),
-            Err(_) => Err(VoiceError::Output("le micro ne répond pas".into())),
+            Ok(Err(e)) => Err(VoiceError::Output(format!("microphone: {e}"))),
+            Err(_) => Err(VoiceError::Output(
+                "the microphone is not responding".into(),
+            )),
         }
     }
 
@@ -160,11 +162,11 @@ fn open_stream(capture: Arc<Mutex<Capture>>) -> Result<(cpal::Stream, String), S
     use cpal::{SampleFormat, SizedSample};
 
     let host = cpal::default_host();
-    let device = host.default_input_device().ok_or("aucun micro")?;
+    let device = host.default_input_device().ok_or("no microphone")?;
     let name = device
         .description()
         .map(|d| d.to_string())
-        .unwrap_or_else(|_| "micro par défaut".into());
+        .unwrap_or_else(|_| "default microphone".into());
     let supported = device.default_input_config().map_err(|e| e.to_string())?;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
@@ -187,7 +189,7 @@ fn open_stream(capture: Arc<Mutex<Capture>>) -> Result<(cpal::Stream, String), S
                         .collect();
                     capture.lock().unwrap().push(&mono);
                 },
-                |e| tracing::warn!("micro : {e}"),
+                |e| tracing::warn!("microphone: {e}"),
                 None,
             )
             .map_err(|e| e.to_string())
@@ -197,13 +199,13 @@ fn open_stream(capture: Arc<Mutex<Capture>>) -> Result<(cpal::Stream, String), S
         SampleFormat::F32 => build::<f32>(&device, config, channels, capture),
         SampleFormat::I16 => build::<i16>(&device, config, channels, capture),
         SampleFormat::U16 => build::<u16>(&device, config, channels, capture),
-        other => Err(format!("format d'échantillon non géré : {other}")),
+        other => Err(format!("unsupported sample format: {other}")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
     Ok((stream, name))
 }
 
-/// Conversion des formats d'échantillon du micro en flottant -1..1.
+/// Converts the microphone sample formats to float -1..1.
 pub struct MicSample(f32);
 
 impl From<f32> for MicSample {
@@ -229,7 +231,7 @@ mod tests {
     #[test]
     fn preroll_is_kept_and_recording_bounded() {
         let mut c = Capture::new(1000);
-        c.push(&[0.1; 500]); // 0,5 s avant l'appui : seules 0,3 s sont gardées
+        c.push(&[0.1; 500]); // 0.5 s before the press: only 0.3 s is kept
         c.start();
         c.push(&[0.2; 1000]);
         let a = c.stop();
@@ -237,7 +239,7 @@ mod tests {
         assert_eq!(a.samples[0], 0.1);
         assert_eq!(a.samples[300], 0.2);
         assert!((c.level() - 0.2).abs() < 1e-3);
-        // Plafond de 30 s.
+        // 30 s cap.
         c.start();
         for _ in 0..40 {
             c.push(&[0.0; 1000]);

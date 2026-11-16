@@ -1,7 +1,8 @@
-//! Faux agent ACP sur stdio, pour développer sans Claude.
+//! Fake ACP agent over stdio, for development without Claude.
 //!
-//! Il répond comme le coach : un accusé, un vrai appel à `get_session_overview`
-//! sur le serveur MCP du programme, puis une phrase sur le virage le plus coûteux.
+//! It replies like the coach: an acknowledgement, a real call to
+//! `get_session_overview` on the program's MCP server, then a sentence about the
+//! most costly corner.
 //!
 //! ```sh
 //! cargo build -p coach --example mock_agent
@@ -47,14 +48,14 @@ async fn call(
     Ok(serde_json::from_str(text).unwrap_or(serde_json::Value::String(text.into())))
 }
 
-/// Analyse simulée : consigne sur le virage le plus coûteux.
+/// Simulated analysis: a cue on the most costly corner.
 async fn plan_next_lap(url: String, token: String) -> String {
     let v = match call(url.clone(), token.clone(), "get_session_overview", None).await {
         Ok(v) => v,
-        Err(e) => return format!("Télémétrie indisponible : {e}"),
+        Err(e) => return format!("Telemetry unavailable: {e}"),
     };
     let Some(worst) = v["time_lost_by_corner"].get(0) else {
-        return "Pas encore de tour à analyser.".into();
+        return "No lap to analyze yet.".into();
     };
     let corner = worst["corner"].as_str().unwrap_or("T1").to_string();
     let args = serde_json::json!({
@@ -62,15 +63,15 @@ async fn plan_next_lap(url: String, token: String) -> String {
         "triggers": [{
             "id": format!("auto-{corner}"), "corner": corner, "anchor": "braking",
             "offset_m": -300, "priority": 6, "expire_after_laps": 2,
-            "text": format!("{corner}, garde de la vitesse au point de corde.")
+            "text": format!("{corner}, carry more speed to the apex.")
         }]
     });
     match call(url, token, "update_plan", Some(args)).await {
         Ok(_) => format!(
-            "{corner} : {:.0} centièmes perdus, consigne ajoutée.",
+            "{corner}: {:.0} hundredths lost, cue added.",
             worst["loss_s"].as_f64().unwrap_or(0.0) * 100.0
         ),
-        Err(e) => format!("Plan refusé : {e}"),
+        Err(e) => format!("Plan rejected: {e}"),
     }
 }
 
@@ -99,7 +100,7 @@ async fn main() -> agent_client_protocol::Result<()> {
                 responder.respond(
                     InitializeResponse::new(req.protocol_version)
                         .agent_capabilities(AgentCapabilities::new())
-                        .agent_info(Implementation::new("faux-coach", "0.1")),
+                        .agent_info(Implementation::new("fake-coach", "0.1")),
                 )
             },
             agent_client_protocol::on_receive_request!(),
@@ -114,7 +115,7 @@ async fn main() -> agent_client_protocol::Result<()> {
                         .unwrap_or_default();
                     *mcp_new.lock().unwrap() = Some((h.url.clone(), token));
                 }
-                responder.respond(NewSessionResponse::new("faux"))
+                responder.respond(NewSessionResponse::new("fake"))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -128,31 +129,31 @@ async fn main() -> agent_client_protocol::Result<()> {
                     if is_analysis {
                         let summary = match endpoint {
                             Some((url, token)) => plan_next_lap(url, token).await,
-                            None => "Pas de serveur MCP.".into(),
+                            None => "No MCP server.".into(),
                         };
                         let _ = send(chunk(&summary));
                         let _ = responder.respond(PromptResponse::new(StopReason::EndTurn));
                         return;
                     }
-                    let _ = send(chunk("Je regarde. "));
+                    let _ = send(chunk("Looking. "));
                     let reply = match endpoint {
                         Some((url, token)) => {
                             let _ = send(SessionUpdate::ToolCall(ToolCall::new("t1", "mcp__coach__get_session_overview")));
                             match overview(url, token).await {
                                 Ok(v) => match v["time_lost_by_corner"].get(0) {
                                     Some(w) => format!(
-                                        "Le plus coûteux, c'est {} : {:.0} centièmes perdus en moyenne.",
+                                        "The most costly is {}: {:.0} hundredths lost on average.",
                                         w["corner"].as_str().unwrap_or("?"),
                                         w["loss_s"].as_f64().unwrap_or(0.0) * 100.0
                                     ),
-                                    None => "Pas encore de tour complet à comparer.".into(),
+                                    None => "No complete lap to compare yet.".into(),
                                 },
-                                Err(e) => format!("Télémétrie indisponible : {e}"),
+                                Err(e) => format!("Telemetry unavailable: {e}"),
                             }
                         }
-                        None => "Pas de serveur MCP.".into(),
+                        None => "No MCP server.".into(),
                     };
-                    // Envoi par petits morceaux, comme un vrai flux.
+                    // Send in small chunks, like a real stream.
                     for word in reply.split_inclusive(' ') {
                         let _ = send(chunk(word));
                         tokio::time::sleep(std::time::Duration::from_millis(30)).await;

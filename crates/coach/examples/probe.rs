@@ -1,8 +1,8 @@
-//! Sonde : lance l'adaptateur ACP, ouvre une session et, avec `--prompt`, envoie
-//! un message et affiche la latence.
+//! Probe: launches the ACP adapter, opens a session and, with `--prompt`, sends
+//! a message and prints the latency.
 //!
 //! ```sh
-//! cargo run -p coach --example probe -- [--model haiku] [--prompt "Bonjour"] [-- commande de l'adaptateur…]
+//! cargo run -p coach --example probe -- [--model haiku] [--prompt "Hello"] [-- adapter command…]
 //! ```
 
 use std::time::{Duration, Instant};
@@ -30,7 +30,7 @@ fn main() {
         .build()
         .unwrap();
     let cfg = AgentConfig {
-        label: "sonde".into(),
+        label: "probe".into(),
         command,
         model,
         disable_thinking: true,
@@ -45,13 +45,13 @@ fn main() {
     let mut turn_started = Instant::now();
     loop {
         let Ok(e) = agent.events().recv_timeout(Duration::from_secs(120)) else {
-            println!("délai dépassé");
+            println!("timed out");
             return;
         };
         match &e {
             CoachEvent::Status(AgentStatus::Ready { agent: name }) if !prompted => {
                 println!(
-                    "session prête en {:.0} ms (agent : {name})",
+                    "session ready in {:.0} ms (agent: {name})",
                     t0.elapsed().as_secs_f64() * 1e3
                 );
                 match &prompt {
@@ -64,18 +64,18 @@ fn main() {
                 }
             }
             CoachEvent::Status(AgentStatus::Failed(err)) => {
-                println!("échec : {err}");
+                println!("failed: {err}");
                 return;
             }
             CoachEvent::Chunk { text, .. } => print!("{text}"),
-            CoachEvent::Error(err) => println!("\nerreur : {err}"),
+            CoachEvent::Error(err) => println!("\nerror: {err}"),
             CoachEvent::TurnEnd {
                 latency,
                 stop_reason,
                 ..
             } => {
                 println!(
-                    "\nfin ({stop_reason}) : premier morceau {:?} ms, total {:.0} ms (mesuré ici : {:.0} ms)",
+                    "\nend ({stop_reason}): first chunk {:?} ms, total {:.0} ms (measured here: {:.0} ms)",
                     latency.first_chunk_ms.map(|x| x.round()),
                     latency.total_ms,
                     turn_started.elapsed().as_secs_f64() * 1e3

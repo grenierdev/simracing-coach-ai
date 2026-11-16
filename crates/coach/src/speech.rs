@@ -1,6 +1,6 @@
-//! Découpage du flux de réponse en phrases, pour les dire au fil de l'eau :
-//! la première phrase (l'accusé « Je regarde le T5. ») part dès qu'elle est
-//! complète, sans attendre la fin de la réponse.
+//! Splits the reply stream into sentences so they can be spoken as they arrive:
+//! the first sentence (the acknowledgement "Looking at T5.") goes out as soon
+//! as it is complete, without waiting for the end of the reply.
 
 #[derive(Debug, Default)]
 pub struct SentenceSplitter {
@@ -12,13 +12,13 @@ fn is_end(c: char) -> bool {
 }
 
 impl SentenceSplitter {
-    /// Ajoute un morceau ; retourne les phrases complètes.
+    /// Adds a chunk; returns the complete sentences.
     pub fn push(&mut self, chunk: &str) -> Vec<String> {
         self.buf.push_str(chunk);
         let mut out = vec![];
         loop {
-            // Fin de phrase : ponctuation finale suivie d'un blanc (« 1.5 » ou
-            // « T5.2 » ne coupent pas), ou retour à la ligne.
+            // End of sentence: final punctuation followed by whitespace ("1.5" or
+            // "T5.2" do not split), or a line break.
             let chars: Vec<(usize, char)> = self.buf.char_indices().collect();
             let cut = chars.iter().enumerate().find_map(|(k, &(i, c))| {
                 if c == '\n' {
@@ -42,7 +42,7 @@ impl SentenceSplitter {
         out
     }
 
-    /// Fin du tour : le reste, s'il y en a.
+    /// End of turn: the remainder, if any.
     pub fn finish(&mut self) -> Option<String> {
         let rest = self.buf.trim().to_string();
         self.buf.clear();
@@ -57,21 +57,21 @@ mod tests {
     #[test]
     fn splits_streamed_sentences() {
         let mut s = SentenceSplitter::default();
-        assert!(s.push("Je regarde").is_empty());
-        assert_eq!(s.push(" le T5. Tu fr"), vec!["Je regarde le T5."]);
-        assert!(s.push("eines 1.5 seconde").is_empty());
+        assert!(s.push("Looking").is_empty());
+        assert_eq!(s.push(" at T5. You br"), vec!["Looking at T5."]);
+        assert!(s.push("ake 1.5 seconds").is_empty());
         assert_eq!(
-            s.push(" trop tôt ! Relâche plus tard"),
-            vec!["Tu freines 1.5 seconde trop tôt !"]
+            s.push(" too early! Release later"),
+            vec!["You brake 1.5 seconds too early!"]
         );
-        assert_eq!(s.finish().as_deref(), Some("Relâche plus tard"));
+        assert_eq!(s.finish().as_deref(), Some("Release later"));
         assert_eq!(s.finish(), None);
     }
 
     #[test]
     fn newline_ends_a_sentence() {
         let mut s = SentenceSplitter::default();
-        assert_eq!(s.push("Premier point\nDeuxième"), vec!["Premier point"]);
-        assert_eq!(s.finish().as_deref(), Some("Deuxième"));
+        assert_eq!(s.push("First point\nSecond"), vec!["First point"]);
+        assert_eq!(s.finish().as_deref(), Some("Second"));
     }
 }

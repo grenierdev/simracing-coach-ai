@@ -1,15 +1,15 @@
-//! Périphériques d'entrée lus en arrière-plan, pendant qu'iRacing a le focus.
+//! Input devices read in the background while iRacing has focus.
 //!
-//! Sources :
-//! - clavier et souris : état global (`device_query` : `GetAsyncKeyState` sous
-//!   Windows, X11 sous Linux) ;
-//! - volants, boîtiers à boutons, joysticks, manettes : DirectInput en mode
-//!   arrière-plan non exclusif sous Windows (l'API qu'utilise iRacing ; Windows
-//!   Gaming Input exige le focus), `gilrs` (evdev) sous Linux.
+//! Sources:
+//! - keyboard and mouse: global state (`device_query`: `GetAsyncKeyState` on
+//!   Windows, X11 on Linux);
+//! - wheels, button boxes, joysticks, gamepads: DirectInput in non-exclusive
+//!   background mode on Windows (the API iRacing uses; Windows Gaming Input
+//!   requires focus), `gilrs` (evdev) on Linux.
 //!
-//! Le service interroge toutes les sources à 200 Hz et calcule les fronts
-//! (appui, relâchement). Deux usages : la capture d'une liaison (« appuie sur
-//! une touche, Échap pour annuler ») et le suivi du bouton de push-to-talk.
+//! The service polls every source at 200 Hz and computes edges (press,
+//! release). Two uses: capturing a binding ("press a key, Escape to cancel")
+//! and tracking the push-to-talk button.
 
 mod backend;
 
@@ -24,23 +24,23 @@ use serde::{Deserialize, Serialize};
 
 pub use backend::Backend;
 
-/// Une entrée identifiable : touche, bouton de souris ou bouton de périphérique.
+/// An identifiable input: key, mouse button or device button.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Binding {
-    /// Touche du clavier (nom `device_query`, ex. « F13 », « Space », « LControl »).
+    /// Keyboard key (`device_query` name, e.g. "F13", "Space", "LControl").
     Key { key: String },
-    /// Bouton de souris (1 = gauche, 2 = droit, 3 = milieu, 4 et 5 = latéraux).
+    /// Mouse button (1 = left, 2 = right, 3 = middle, 4 and 5 = side).
     Mouse { button: u8 },
-    /// Bouton d'un périphérique de jeu.
+    /// Button of a game device.
     Controller {
-        /// Nom du produit, affiché et utilisé si l'identifiant ne correspond plus.
+        /// Product name, displayed and used if the identifier no longer matches.
         device: String,
-        /// Identifiant de l'instance (GUID DirectInput ou UUID gilrs).
+        /// Instance identifier (DirectInput GUID or gilrs UUID).
         instance: String,
         button: u16,
     },
-    /// Direction d'un chapeau (POV) : 0 haut, 1 droite, 2 bas, 3 gauche.
+    /// Hat (POV) direction: 0 up, 1 right, 2 down, 3 left.
     Hat {
         device: String,
         instance: String,
@@ -52,10 +52,10 @@ pub enum Binding {
 impl Binding {
     pub fn label(&self) -> String {
         match self {
-            Binding::Key { key } => format!("Clavier : {key}"),
-            Binding::Mouse { button } => format!("Souris : bouton {button}"),
+            Binding::Key { key } => format!("Keyboard: {key}"),
+            Binding::Mouse { button } => format!("Mouse: button {button}"),
             Binding::Controller { device, button, .. } => {
-                format!("{device} : bouton {}", button + 1)
+                format!("{device}: button {}", button + 1)
             }
             Binding::Hat {
                 device,
@@ -63,17 +63,17 @@ impl Binding {
                 direction,
                 ..
             } => {
-                let d = ["haut", "droite", "bas", "gauche"]
+                let d = ["up", "right", "down", "left"]
                     .get(*direction as usize)
                     .copied()
                     .unwrap_or("?");
-                format!("{device} : chapeau {} {d}", hat + 1)
+                format!("{device}: hat {} {d}", hat + 1)
             }
         }
     }
 
-    /// Même entrée physique. Pour un périphérique, l'identifiant d'instance prime ;
-    /// s'il a changé (autre port USB), le nom du produit suffit.
+    /// Same physical input. For a device, the instance identifier takes precedence;
+    /// if it changed (different USB port), the product name is enough.
     pub fn matches(&self, other: &Binding) -> bool {
         match (self, other) {
             (
@@ -110,7 +110,7 @@ impl Binding {
         matches!(self, Binding::Key { key } if key == "Escape")
     }
 
-    /// Entrées ignorées en capture : le clic gauche (il sert à lancer la capture).
+    /// Inputs ignored during capture: left click (it is used to start the capture).
     fn ignored_in_capture(&self) -> bool {
         matches!(self, Binding::Mouse { button: 1 })
     }
@@ -128,14 +128,14 @@ pub enum PttEvent {
     Released(Instant),
 }
 
-/// Calcul des fronts et logique de capture/PTT, indépendant des sources.
+/// Edge detection and capture/PTT logic, independent of the sources.
 #[derive(Default)]
 pub struct EdgeTracker {
     held: HashSet<Binding>,
 }
 
 impl EdgeTracker {
-    /// Met à jour l'état ; retourne (appuis, relâchements).
+    /// Updates the state; returns (presses, releases).
     pub fn update(&mut self, now: &HashSet<Binding>) -> (Vec<Binding>, Vec<Binding>) {
         let pressed = now.difference(&self.held).cloned().collect();
         let released = self.held.difference(now).cloned().collect();
@@ -164,12 +164,12 @@ pub struct InputService {
 const POLL: Duration = Duration::from_millis(5);
 
 impl InputService {
-    /// Démarre la lecture avec les sources de la plateforme.
+    /// Starts reading with the platform sources.
     pub fn spawn() -> Self {
         Self::spawn_with(backend::platform_backends)
     }
 
-    /// Variante avec des sources fournies (tests).
+    /// Variant with provided sources (tests).
     pub fn spawn_with<F>(make_backends: F) -> Self
     where
         F: FnOnce() -> Vec<Box<dyn Backend>> + Send + 'static,
@@ -186,7 +186,7 @@ impl InputService {
             std::thread::Builder::new()
                 .name("input".into())
                 .spawn(move || run(make_backends(), shared, ptt_tx, stop))
-                .expect("démarrage du thread des entrées")
+                .expect("failed to start the input thread")
         };
         InputService {
             shared,
@@ -196,8 +196,8 @@ impl InputService {
         }
     }
 
-    /// Attend la prochaine entrée appuyée sur n'importe quel périphérique.
-    /// Échap annule. Une nouvelle capture remplace la précédente.
+    /// Waits for the next input pressed on any device.
+    /// Escape cancels. A new capture replaces the previous one.
     pub fn capture(&self) -> Receiver<CaptureResult> {
         let (tx, rx) = bounded(1);
         self.shared.lock().unwrap().capture = Some(tx);
@@ -222,7 +222,7 @@ impl InputService {
         &self.ptt_rx
     }
 
-    /// Périphériques de jeu détectés.
+    /// Detected game devices.
     pub fn devices(&self) -> Vec<String> {
         self.shared.lock().unwrap().devices.clone()
     }
@@ -290,7 +290,7 @@ fn run(
 mod tests {
     use super::*;
 
-    /// Source simulée : l'état courant est piloté par le test.
+    /// Simulated source: the current state is driven by the test.
     struct Fake(Arc<Mutex<HashSet<Binding>>>);
 
     impl Backend for Fake {
@@ -298,7 +298,7 @@ mod tests {
             out.extend(self.0.lock().unwrap().iter().cloned());
         }
         fn devices(&self) -> Vec<String> {
-            vec!["Volant de test".into()]
+            vec!["Test wheel".into()]
         }
     }
 
@@ -308,7 +308,7 @@ mod tests {
 
     fn wheel(button: u16, instance: &str) -> Binding {
         Binding::Controller {
-            device: "Volant de test".into(),
+            device: "Test wheel".into(),
             instance: instance.into(),
             button,
         }
@@ -329,16 +329,16 @@ mod tests {
     #[test]
     fn capture_takes_first_new_press_and_ignores_held_keys() {
         let (svc, state) = service();
-        set(&state, &[key("LShift")]); // déjà enfoncée avant la capture
+        set(&state, &[key("LShift")]); // already held before the capture
         let rx = svc.capture();
-        set(&state, &[key("LShift"), Binding::Mouse { button: 1 }]); // clic gauche ignoré
+        set(&state, &[key("LShift"), Binding::Mouse { button: 1 }]); // left click ignored
         assert!(rx.try_recv().is_err());
         set(&state, &[key("LShift"), wheel(11, "g1")]);
         assert_eq!(
             rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             CaptureResult::Bound(wheel(11, "g1"))
         );
-        assert_eq!(svc.devices(), vec!["Volant de test"]);
+        assert_eq!(svc.devices(), vec!["Test wheel"]);
     }
 
     #[test]
@@ -358,7 +358,7 @@ mod tests {
         svc.set_ptt(Some(wheel(3, "g1")));
         set(&state, &[wheel(4, "g1")]);
         assert!(svc.ptt_events().try_recv().is_err());
-        // Autre port USB : instance différente, même produit et même bouton.
+        // Different USB port: different instance, same product and same button.
         set(&state, &[wheel(3, "g2")]);
         assert!(matches!(
             svc.ptt_events()
@@ -383,7 +383,7 @@ mod tests {
         }
         let s = S {
             ptt: Binding::Hat {
-                device: "Boîtier".into(),
+                device: "Button box".into(),
                 instance: "{abc}".into(),
                 hat: 0,
                 direction: 2,
@@ -392,7 +392,7 @@ mod tests {
         let text = toml::to_string(&s).unwrap();
         assert!(text.contains("type = \"hat\""), "{text}");
         assert_eq!(toml::from_str::<S>(&text).unwrap(), s);
-        assert_eq!(s.ptt.label(), "Boîtier : chapeau 1 bas");
-        assert_eq!(wheel(0, "x").label(), "Volant de test : bouton 1");
+        assert_eq!(s.ptt.label(), "Button box: hat 1 down");
+        assert_eq!(wheel(0, "x").label(), "Test wheel: button 1");
     }
 }

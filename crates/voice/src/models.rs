@@ -1,11 +1,11 @@
-//! Modèles vocaux : emplacement local et téléchargement depuis Hugging Face.
+//! Voice models: local location and download from Hugging Face.
 //!
-//! Chaque modèle est un dépôt Hugging Face recopié dans
-//! `<dossier des modèles>/<nom du dépôt>/`. Un fichier `.complet` marque un
-//! téléchargement terminé.
+//! Each model is a Hugging Face repository copied into
+//! `<models dir>/<repository name>/`. A `.complete` file marks a finished
+//! download.
 //!
-//! Dossier des modèles : `SIMCOACH_MODELS_DIR`, sinon le dossier de données
-//! local de l'utilisateur (`%LOCALAPPDATA%\simcoach\data\models` sous Windows).
+//! Models directory: `SIMCOACH_MODELS_DIR`, otherwise the user's local data
+//! directory (`%LOCALAPPDATA%\simcoach\data\models` on Windows).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,9 +16,9 @@ use crate::VoiceError;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ModelSpec {
-    /// Dépôt Hugging Face, `propriétaire/nom`.
+    /// Hugging Face repository, `owner/name`.
     pub repo: &'static str,
-    /// Fichiers à garder parmi ceux du dépôt.
+    /// Files to keep from the repository.
     pub keep: fn(&str) -> bool,
 }
 
@@ -32,21 +32,21 @@ impl ModelSpec {
     }
 }
 
-/// Voix française Piper « siwis » (féminine, CC-BY 4.0).
+/// French Piper voice "siwis" (female, CC-BY 4.0).
 pub const PIPER_FR_SIWIS: ModelSpec = ModelSpec {
     repo: "csukuangfj/vits-piper-fr_FR-siwis-medium",
     keep: |p| !p.ends_with(".py") && !p.ends_with(".sh") && !p.starts_with('.'),
 };
 
-/// Reconnaissance vocale Parakeet TDT 0.6B v3, int8 (25 langues dont le français).
+/// Parakeet TDT 0.6B v3 speech recognition, int8 (25 languages including French and English).
 pub const PARAKEET_V3_INT8: ModelSpec = ModelSpec {
     repo: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
     keep: |p| p.ends_with(".onnx") || p == "tokens.txt",
 };
 
-const DONE_MARKER: &str = ".complet";
+const DONE_MARKER: &str = ".complete";
 
-/// Client HTTP : certificats du système et proxy des variables d'environnement.
+/// HTTP client: system certificates and proxy from environment variables.
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .tls_config(
@@ -67,8 +67,8 @@ pub fn models_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("models"))
 }
 
-/// Le modèle est-il présent ? Un dossier sans marqueur mais contenant un
-/// `.onnx` est accepté (copie manuelle).
+/// Is the model present? A directory without the marker but containing a
+/// `.onnx` is accepted (manual copy).
 pub fn is_present(spec: &ModelSpec, models_dir: &Path) -> bool {
     let dir = spec.path_in(models_dir);
     dir.join(DONE_MARKER).exists()
@@ -105,7 +105,7 @@ fn encode_path(p: &str) -> String {
         .join("/")
 }
 
-/// Télécharge le modèle s'il manque. `progress(octets reçus, octets attendus)`.
+/// Downloads the model if missing. `progress(bytes received, bytes expected)`.
 pub fn ensure(
     spec: &ModelSpec,
     models_dir: &Path,
@@ -151,7 +151,7 @@ pub fn ensure(
             spec.repo,
             encode_path(&e.path)
         );
-        let tmp = dst.with_extension("partiel");
+        let tmp = dst.with_extension("partial");
         let mut out = std::fs::File::create(&tmp)?;
         let mut body = agent.get(&url).call().map_err(dl)?.into_body();
         let mut reader = body.as_reader();

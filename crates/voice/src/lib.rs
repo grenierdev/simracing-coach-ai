@@ -1,14 +1,13 @@
-//! Voix du coach.
+//! Coach voice.
 //!
-//! Les moteurs sont derrière deux traits, [`Tts`] et [`Stt`], pour pouvoir en
-//! changer sans toucher au reste : sherpa-onnx (Piper, Kokoro, Parakeet) est la
-//! première implémentation ; les voix Windows ou un autre moteur peuvent s'y
-//! brancher.
+//! Engines sit behind two traits, [`Tts`] and [`Stt`], so they can be swapped
+//! without touching the rest: sherpa-onnx (Piper, Kokoro, Parakeet) is the
+//! first implementation; Windows voices or another engine can plug in.
 //!
-//! - [`output`] : sortie audio (cpal, ou silencieuse si aucun périphérique) ;
-//! - [`speaker`] : thread de parole avec cache de synthèse ;
-//! - [`models`] : téléchargement des modèles depuis Hugging Face ;
-//! - `sherpa` (feature) : moteurs sherpa-onnx.
+//! - [`output`]: audio output (cpal, or silent if there is no device);
+//! - [`speaker`]: speech thread with a synthesis cache;
+//! - [`models`]: model download from Hugging Face;
+//! - `sherpa` (feature): sherpa-onnx engines.
 
 pub mod listener;
 pub mod models;
@@ -27,19 +26,19 @@ pub use speaker::{Speaker, SpeakerState, SpeakerStatus};
 
 #[derive(Debug, Error)]
 pub enum VoiceError {
-    #[error("modèle introuvable : {0}")]
+    #[error("model not found: {0}")]
     ModelMissing(String),
-    #[error("échec du moteur : {0}")]
+    #[error("engine failure: {0}")]
     Engine(String),
-    #[error("sortie audio : {0}")]
+    #[error("audio output: {0}")]
     Output(String),
-    #[error("téléchargement : {0}")]
+    #[error("download: {0}")]
     Download(String),
-    #[error("E/S : {0}")]
+    #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
 }
 
-/// Audio mono en flottants (-1..1).
+/// Mono audio as floats (-1..1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Audio {
     pub samples: Vec<f32>,
@@ -56,27 +55,27 @@ impl Audio {
     }
 }
 
-/// Synthèse vocale.
+/// Speech synthesis.
 pub trait Tts {
-    /// Nom affiché du moteur et de la voix.
+    /// Display name of the engine and voice.
     fn name(&self) -> String;
     fn synthesize(&mut self, text: &str) -> Result<Audio, VoiceError>;
 }
 
-/// Reconnaissance vocale sur un enregistrement complet (push-to-talk).
+/// Speech recognition on a complete recording (push-to-talk).
 pub trait Stt {
     fn name(&self) -> String;
     fn transcribe(&mut self, audio: &Audio) -> Result<String, VoiceError>;
 }
 
-/// Durée estimée d'une phrase dite (s), avant synthèse. Mesuré avec Piper
-/// `fr_FR-siwis` : 15 à 20 caractères par seconde.
+/// Estimated duration of a spoken sentence (s), before synthesis. Measured with
+/// Piper `fr_FR-siwis`: 15 to 20 characters per second.
 pub fn estimate_duration(text: &str) -> f64 {
     0.35 + text.chars().count() as f64 / 16.0
 }
 
-/// Moteur muet : produit du silence de la durée estimée. Sert quand la voix
-/// est désactivée ou indisponible, et dans les tests.
+/// Silent engine: produces silence of the estimated duration. Used when the
+/// voice is disabled or unavailable, and in tests.
 pub struct SilentTts {
     pub sample_rate: u32,
 }
@@ -91,7 +90,7 @@ impl Default for SilentTts {
 
 impl Tts for SilentTts {
     fn name(&self) -> String {
-        "muet".into()
+        "silent".into()
     }
 
     fn synthesize(&mut self, text: &str) -> Result<Audio, VoiceError> {
@@ -109,10 +108,10 @@ mod tests {
 
     #[test]
     fn estimate_matches_measured_piper_rates() {
-        // Mesures Piper siwis : 35 caractères → 2,31 s ; 67 caractères → 3,38 s.
-        let a = estimate_duration("Freine cinq mètres plus tard au T5.");
+        // Piper siwis measurements: 35 characters → 2.31 s; 67 characters → 3.38 s.
+        let a = estimate_duration("Brake five meters later for turn 5.");
         let b = estimate_duration(
-            "Tu perds deux dixièmes au virage quatre, reprends les gaz plus tôt.",
+            "You lose two tenths in turn four, get back on the throttle earlier.",
         );
         assert!((a - 2.31).abs() < 0.4, "{a}");
         assert!((b - 3.38).abs() < 1.2, "{b}");
@@ -122,7 +121,7 @@ mod tests {
     #[test]
     fn silent_tts_has_estimated_duration() {
         let mut t = SilentTts::default();
-        let a = t.synthesize("Bonjour").unwrap();
-        assert!((a.duration_s() - estimate_duration("Bonjour")).abs() < 0.01);
+        let a = t.synthesize("Hello").unwrap();
+        assert!((a.duration_s() - estimate_duration("Hello")).abs() < 0.01);
     }
 }

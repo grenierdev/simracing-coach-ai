@@ -1,6 +1,6 @@
 [package]
 name = "coach"
-description = "Client ACP : pilote l'adaptateur Claude, sessions, flux de réponse, latence"
+description = "ACP client: drives the Claude adapter, sessions, reply streaming, latency"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

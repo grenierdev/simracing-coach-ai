@@ -1,7 +1,7 @@
-//! Thread de reconnaissance vocale : transcrit les enregistrements du push-to-talk.
+//! Speech recognition thread: transcribes the push-to-talk recordings.
 //!
-//! Le moteur (Parakeet, environ 670 Mo) est construit dans le thread : son
-//! téléchargement et son chargement ne bloquent rien.
+//! The engine (Parakeet, about 670 MB) is built inside the thread: downloading
+//! and loading it block nothing.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -15,9 +15,9 @@ use crate::{Audio, Stt, VoiceError};
 pub struct Transcript {
     pub id: u64,
     pub text: String,
-    /// Durée de l'enregistrement, s.
+    /// Recording duration, s.
     pub audio_s: f64,
-    /// Durée de la transcription, ms.
+    /// Transcription duration, ms.
     pub millis: f64,
 }
 
@@ -56,13 +56,13 @@ impl Listener {
                         s
                     }
                     Err(e) => {
-                        tracing::warn!("STT indisponible : {e}");
+                        tracing::warn!("STT unavailable: {e}");
                         st.lock().unwrap().state = SpeakerState::Error(e.to_string());
                         return;
                     }
                 };
                 for (id, audio) in rx {
-                    // Trop court pour être une phrase (appui accidentel).
+                    // Too short to be a sentence (accidental press).
                     if audio.duration_s() < 0.25 {
                         continue;
                     }
@@ -76,11 +76,11 @@ impl Listener {
                                 millis: t.elapsed().as_secs_f64() * 1e3,
                             });
                         }
-                        Err(e) => tracing::warn!("transcription : {e}"),
+                        Err(e) => tracing::warn!("transcription: {e}"),
                     }
                 }
             })
-            .expect("démarrage du thread de reconnaissance vocale");
+            .expect("failed to start the speech recognition thread");
         Listener {
             tx,
             results: rrx,
@@ -109,10 +109,10 @@ mod tests {
     struct Echo;
     impl Stt for Echo {
         fn name(&self) -> String {
-            "écho".into()
+            "echo".into()
         }
         fn transcribe(&mut self, audio: &Audio) -> Result<String, VoiceError> {
-            Ok(format!("{} échantillons", audio.samples.len()))
+            Ok(format!("{} samples", audio.samples.len()))
         }
     }
 
@@ -123,11 +123,11 @@ mod tests {
             samples: vec![0.0; n],
             sample_rate: 16_000,
         };
-        l.transcribe(1, audio(1_000)); // 60 ms : ignoré
+        l.transcribe(1, audio(1_000)); // 60 ms: ignored
         l.transcribe(2, audio(16_000));
         let t = l.results().recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(t.id, 2);
-        assert_eq!(t.text, "16000 échantillons");
+        assert_eq!(t.text, "16000 samples");
         assert_eq!(l.status().state, SpeakerState::Ready);
     }
 }

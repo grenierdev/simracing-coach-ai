@@ -1,5 +1,5 @@
-//! Moteurs sherpa-onnx : Piper (VITS) et Kokoro pour la synthèse, Parakeet
-//! pour la reconnaissance.
+//! sherpa-onnx engines: Piper (VITS) and Kokoro for synthesis, Parakeet for
+//! recognition.
 
 use std::path::Path;
 
@@ -13,14 +13,14 @@ fn path_str(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// Premier fichier `.onnx` du dossier.
+/// First `.onnx` file in the directory.
 fn find_onnx(dir: &Path) -> Result<std::path::PathBuf, VoiceError> {
     std::fs::read_dir(dir)
         .map_err(|_| VoiceError::ModelMissing(path_str(dir)))?
         .flatten()
         .map(|e| e.path())
         .find(|p| p.extension().is_some_and(|x| x == "onnx"))
-        .ok_or_else(|| VoiceError::ModelMissing(format!("aucun .onnx dans {}", dir.display())))
+        .ok_or_else(|| VoiceError::ModelMissing(format!("no .onnx in {}", dir.display())))
 }
 
 fn require(p: &Path) -> Result<String, VoiceError> {
@@ -39,7 +39,7 @@ pub struct SherpaTts {
 }
 
 impl SherpaTts {
-    /// Voix Piper : dossier contenant `<voix>.onnx`, `tokens.txt` et `espeak-ng-data/`.
+    /// Piper voice: directory containing `<voice>.onnx`, `tokens.txt` and `espeak-ng-data/`.
     pub fn piper(dir: &Path, threads: i32) -> Result<Self, VoiceError> {
         let model = find_onnx(dir)?;
         let mut cfg = OfflineTtsConfig::default();
@@ -48,7 +48,7 @@ impl SherpaTts {
         cfg.model.vits.data_dir = Some(require(&dir.join("espeak-ng-data"))?);
         cfg.model.num_threads = threads;
         let tts = OfflineTts::create(&cfg)
-            .ok_or_else(|| VoiceError::Engine(format!("chargement de {}", model.display())))?;
+            .ok_or_else(|| VoiceError::Engine(format!("loading {}", model.display())))?;
         let label = model
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -61,8 +61,8 @@ impl SherpaTts {
         })
     }
 
-    /// Kokoro multilingue : `model.onnx`, `voices.bin`, `tokens.txt`,
-    /// `espeak-ng-data/`. La voix française `ff_siwis` est le locuteur 30.
+    /// Multilingual Kokoro: `model.onnx`, `voices.bin`, `tokens.txt`,
+    /// `espeak-ng-data/`. The French voice `ff_siwis` is speaker 30.
     pub fn kokoro(dir: &Path, speaker_id: i32, threads: i32) -> Result<Self, VoiceError> {
         let mut cfg = OfflineTtsConfig::default();
         cfg.model.kokoro.model = Some(require(&dir.join("model.onnx"))?);
@@ -71,17 +71,17 @@ impl SherpaTts {
         cfg.model.kokoro.data_dir = Some(require(&dir.join("espeak-ng-data"))?);
         cfg.model.kokoro.lang = Some("fr".into());
         cfg.model.num_threads = threads;
-        let tts = OfflineTts::create(&cfg)
-            .ok_or_else(|| VoiceError::Engine("chargement de Kokoro".into()))?;
+        let tts =
+            OfflineTts::create(&cfg).ok_or_else(|| VoiceError::Engine("loading Kokoro".into()))?;
         Ok(SherpaTts {
             tts,
             speaker_id,
             speed: 1.0,
-            label: format!("Kokoro (locuteur {speaker_id})"),
+            label: format!("Kokoro (speaker {speaker_id})"),
         })
     }
 
-    /// Débit : 1.0 = normal, 1.1 = 10 % plus rapide.
+    /// Speech rate: 1.0 = normal, 1.1 = 10 % faster.
     pub fn with_speed(mut self, speed: f32) -> Self {
         self.speed = speed;
         self
@@ -102,7 +102,7 @@ impl Tts for SherpaTts {
         let audio = self
             .tts
             .generate_with_config(text, &cfg, None::<fn(&[f32], f32) -> bool>)
-            .ok_or_else(|| VoiceError::Engine(format!("synthèse de « {text} »")))?;
+            .ok_or_else(|| VoiceError::Engine(format!("synthesizing \"{text}\"")))?;
         Ok(Audio {
             samples: audio.samples().to_vec(),
             sample_rate: audio.sample_rate() as u32,
@@ -115,7 +115,7 @@ pub struct SherpaStt {
 }
 
 impl SherpaStt {
-    /// Parakeet TDT (transducteur NeMo) : `encoder*.onnx`, `decoder*.onnx`,
+    /// Parakeet TDT (NeMo transducer): `encoder*.onnx`, `decoder*.onnx`,
     /// `joiner*.onnx`, `tokens.txt`.
     pub fn parakeet(dir: &Path, threads: i32) -> Result<Self, VoiceError> {
         let pick = |prefix: &str| -> Result<String, VoiceError> {
@@ -130,7 +130,7 @@ impl SherpaStt {
                 })
                 .map(|p| path_str(&p))
                 .ok_or_else(|| {
-                    VoiceError::ModelMissing(format!("{prefix}*.onnx dans {}", dir.display()))
+                    VoiceError::ModelMissing(format!("{prefix}*.onnx in {}", dir.display()))
                 })
         };
         let mut cfg = OfflineRecognizerConfig::default();
@@ -141,7 +141,7 @@ impl SherpaStt {
         cfg.model_config.model_type = Some("nemo_transducer".into());
         cfg.model_config.num_threads = threads;
         let recognizer = OfflineRecognizer::create(&cfg)
-            .ok_or_else(|| VoiceError::Engine("chargement de Parakeet".into()))?;
+            .ok_or_else(|| VoiceError::Engine("loading Parakeet".into()))?;
         Ok(SherpaStt { recognizer })
     }
 }
@@ -164,21 +164,22 @@ impl Stt for SherpaStt {
 
 #[cfg(test)]
 mod tests {
-    //! Tests avec les vrais modèles : lancés seulement si `SIMCOACH_MODELS_DIR`
-    //! contient Piper siwis et Parakeet v3.
+    //! Tests with the real models: run only if `SIMCOACH_MODELS_DIR` contains
+    //! Piper siwis and Parakeet v3.
     use super::*;
     use crate::models::{PARAKEET_V3_INT8, PIPER_FR_SIWIS, is_present, models_dir};
 
     #[test]
     fn piper_then_parakeet_round_trip() {
         if std::env::var_os("SIMCOACH_MODELS_DIR").is_none() {
-            eprintln!("SIMCOACH_MODELS_DIR absent : test ignoré");
+            eprintln!("SIMCOACH_MODELS_DIR not set: test skipped");
             return;
         }
         let dir = models_dir();
         assert!(is_present(&PIPER_FR_SIWIS, &dir) && is_present(&PARAKEET_V3_INT8, &dir));
         let mut tts = SherpaTts::piper(&PIPER_FR_SIWIS.path_in(&dir), 2).unwrap();
         let mut stt = SherpaStt::parakeet(&PARAKEET_V3_INT8.path_in(&dir), 2).unwrap();
+        // The sentence stays in French: the Piper siwis voice is French.
         let audio = tts.synthesize("Je n'ai plus de rotation au T5.").unwrap();
         assert!(audio.duration_s() > 1.0);
         let text = stt.transcribe(&audio).unwrap();

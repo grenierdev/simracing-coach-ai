@@ -1,17 +1,17 @@
-//! Client ACP du coach.
+//! ACP client of the coach.
 //!
-//! Le programme lance l'adaptateur Claude (`@agentclientprotocol/claude-agent-acp`)
-//! en sous-processus et lui parle en JSON-RPC sur stdio. Une session est ouverte
-//! au démarrage et gardée chaude ; chaque message du pilote devient un
-//! `session/prompt`, et les `agent_message_chunk` reçus sont relayés au fil de
-//! l'eau (vers l'interface, puis la voix).
+//! The program launches the Claude adapter (`@agentclientprotocol/claude-agent-acp`)
+//! as a subprocess and talks JSON-RPC to it over stdio. A session is opened at
+//! startup and kept warm; each driver message becomes a `session/prompt`, and the
+//! `agent_message_chunk`s received are relayed as they stream in (to the UI, then
+//! the voice).
 //!
-//! Configuration de la session (voir `docs/verifications.md`) :
-//! - prompt système de Claude Code remplacé par celui du coach (`override`) ;
-//! - outils intégrés retirés (`tools: []`), seuls nos outils MCP autorisés ;
-//! - réglages Claude Code du poste ignorés (`settingSources: []`) ;
-//! - modèle choisi par `ANTHROPIC_MODEL`, réflexion coupée pour la conversation ;
-//! - abonnement du CLI : `ANTHROPIC_API_KEY` n'est pas transmise.
+//! Session configuration (see `docs/verifications.md`):
+//! - Claude Code system prompt replaced by the coach's (`override`);
+//! - built-in tools removed (`tools: []`), only our MCP tools allowed;
+//! - the machine's Claude Code settings ignored (`settingSources: []`);
+//! - model chosen by `ANTHROPIC_MODEL`, thinking disabled for the conversation;
+//! - CLI subscription: `ANTHROPIC_API_KEY` is not passed on.
 
 pub mod context;
 pub mod speech;
@@ -38,13 +38,13 @@ use tokio::sync::mpsc;
 pub use context::{PilotContext, format_prompt};
 pub use speech::SentenceSplitter;
 
-/// Prompt système par défaut du coach (copié en `CLAUDE.md` dans le dossier de session).
+/// Default coach system prompt (copied as `CLAUDE.md` into the session directory).
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/CLAUDE.md");
 
-/// Prompt système de la session d'analyse (planification du tour suivant).
-pub const DEFAULT_ANALYSIS_PROMPT: &str = include_str!("../prompts/ANALYSE.md");
+/// System prompt of the analysis session (planning the next lap).
+pub const DEFAULT_ANALYSIS_PROMPT: &str = include_str!("../prompts/ANALYSIS.md");
 
-/// Préfixe des outils de notre serveur MCP chez Claude Code.
+/// Prefix of our MCP server's tools in Claude Code.
 pub fn mcp_tool_prefix(server: &str) -> String {
     format!("mcp__{server}__")
 }
@@ -58,25 +58,25 @@ pub struct McpEndpoint {
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
-    /// Nom du rôle (« conversation », « analyse »), pour l'affichage.
+    /// Role name ("conversation", "analysis"), for display.
     pub label: String,
-    /// Programme de l'adaptateur et ses arguments.
+    /// Adapter program and its arguments.
     pub command: Vec<String>,
-    /// Modèle (`ANTHROPIC_MODEL`) : `haiku`, `sonnet`, `opus` ou un identifiant complet.
+    /// Model (`ANTHROPIC_MODEL`): `haiku`, `sonnet`, `opus` or a full identifier.
     pub model: Option<String>,
-    /// Coupe la réflexion (`MAX_THINKING_TOKENS=0`) : réponses plus rapides.
+    /// Disables thinking (`MAX_THINKING_TOKENS=0`): faster replies.
     pub disable_thinking: bool,
-    /// Variables d'environnement supplémentaires de l'adaptateur.
+    /// Extra environment variables for the adapter.
     pub env: Vec<(String, String)>,
-    /// Répertoire de travail de la session (contient le `CLAUDE.md` du coach).
+    /// Session working directory (holds the coach's `CLAUDE.md`).
     pub cwd: PathBuf,
     pub system_prompt: String,
     pub mcp: Option<McpEndpoint>,
 }
 
 impl AgentConfig {
-    /// Commande par défaut : `SIMCOACH_ACP_COMMAND` si défini, sinon
-    /// `claude-agent-acp` s'il est dans le PATH, sinon `npx`.
+    /// Default command: `SIMCOACH_ACP_COMMAND` if set, otherwise
+    /// `claude-agent-acp` if it is in the PATH, otherwise `npx`.
     pub fn default_command() -> Vec<String> {
         if let Ok(cmd) = std::env::var("SIMCOACH_ACP_COMMAND") {
             let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
@@ -104,7 +104,7 @@ impl AgentConfig {
         }
     }
 
-    /// Environnement transmis à l'adaptateur.
+    /// Environment passed to the adapter.
     pub fn process_env(&self) -> Vec<(String, String)> {
         let mut env = self.env.clone();
         if let Some(m) = &self.model {
@@ -116,7 +116,7 @@ impl AgentConfig {
         env
     }
 
-    /// Options Claude Code passées dans `_meta.claudeCode.options`.
+    /// Claude Code options passed in `_meta.claudeCode.options`.
     pub fn session_meta(&self) -> Meta {
         let allowed: Vec<String> = self
             .mcp
@@ -169,19 +169,19 @@ pub enum AgentStatus {
     Stopped,
 }
 
-/// Latence d'un tour de parole.
+/// Latency of a conversation turn.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TurnLatency {
-    /// De l'envoi du prompt au premier `agent_message_chunk`, ms.
+    /// From sending the prompt to the first `agent_message_chunk`, ms.
     pub first_chunk_ms: Option<f64>,
-    /// De l'envoi du prompt à la fin du tour, ms.
+    /// From sending the prompt to the end of the turn, ms.
     pub total_ms: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoachEvent {
     Status(AgentStatus),
-    /// Morceau de réponse, à afficher et à dire au fil de l'eau.
+    /// Reply chunk, to display and speak as it streams in.
     Chunk {
         turn: u64,
         text: String,
@@ -192,7 +192,7 @@ pub enum CoachEvent {
         name: String,
         status: String,
     },
-    /// Demande de permission (auto-approuvée ou refusée).
+    /// Permission request (auto-approved or denied).
     Permission {
         tool: String,
         allowed: bool,
@@ -217,7 +217,7 @@ struct TurnState {
     first_chunk_ms: Option<f64>,
 }
 
-/// Session ACP tenue par une tâche du runtime tokio.
+/// ACP session held by a task on the tokio runtime.
 pub struct CoachAgent {
     label: String,
     tx: mpsc::UnboundedSender<Cmd>,
@@ -225,7 +225,7 @@ pub struct CoachAgent {
     next_turn: Mutex<u64>,
 }
 
-/// Décision sur une demande de permission : nos outils MCP oui, le reste non.
+/// Decision on a permission request: our MCP tools yes, everything else no.
 pub fn permission_allowed(req: &RequestPermissionRequest, mcp_server: Option<&str>) -> bool {
     let Some(server) = mcp_server else {
         return false;
@@ -263,7 +263,7 @@ fn permission_response(req: &RequestPermissionRequest, allow: bool) -> RequestPe
 }
 
 impl CoachAgent {
-    /// Lance l'adaptateur décrit par `cfg.command`.
+    /// Launches the adapter described by `cfg.command`.
     pub fn spawn(cfg: AgentConfig, rt: &tokio::runtime::Handle) -> Self {
         let mut acp = AcpAgentConfig::new(cfg.command.first().cloned().unwrap_or_default());
         acp = acp.args(cfg.command.iter().skip(1).cloned());
@@ -273,7 +273,7 @@ impl CoachAgent {
         Self::spawn_with(AcpAgent::new(acp), cfg, rt)
     }
 
-    /// Variante avec un transport quelconque (agent en processus, pour les tests).
+    /// Variant with any transport (in-process agent, for tests).
     pub fn spawn_with(
         transport: impl ConnectTo<Client> + 'static,
         cfg: AgentConfig,
@@ -295,7 +295,7 @@ impl CoachAgent {
         &self.label
     }
 
-    /// Envoie un message ; retourne le numéro du tour de parole.
+    /// Sends a message; returns the conversation turn number.
     pub fn prompt(&self, text: impl Into<String>) -> u64 {
         let mut n = self.next_turn.lock().unwrap();
         *n += 1;
@@ -306,7 +306,7 @@ impl CoachAgent {
         *n
     }
 
-    /// Interrompt le tour en cours (`session/cancel`).
+    /// Interrupts the current turn (`session/cancel`).
     pub fn cancel(&self) {
         let _ = self.tx.send(Cmd::Cancel);
     }
@@ -454,7 +454,7 @@ async fn run(
                         let _ = events.send(CoachEvent::Error(e.to_string()));
                         let _ = events.send(CoachEvent::TurnEnd {
                             turn,
-                            stop_reason: "erreur".into(),
+                            stop_reason: "error".into(),
                             latency,
                         });
                     }

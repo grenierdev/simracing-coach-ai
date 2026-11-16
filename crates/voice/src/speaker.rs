@@ -1,7 +1,7 @@
-//! Thread de parole : synthèse (avec cache) puis lecture.
+//! Speech thread: synthesis (with a cache) then playback.
 //!
-//! Le moteur TTS est construit dans le thread lui-même (chargement du modèle
-//! d'environ 1 s) ; les appels depuis la boucle rapide ne bloquent jamais.
+//! The TTS engine is built inside the thread itself (model loading takes about
+//! 1 s); calls from the fast loop never block.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,13 +25,13 @@ pub struct SpeakerStatus {
     pub engine: String,
     pub output: String,
     pub state: SpeakerState,
-    /// Précision sur l'état (progression du téléchargement du modèle…).
+    /// Detail on the state (model download progress…).
     pub detail: Option<String>,
-    /// Durée de la dernière synthèse, ms (absente si la phrase était en cache).
+    /// Duration of the last synthesis, ms (absent if the sentence was cached).
     pub last_synthesis_ms: Option<f64>,
-    /// De la demande à la mise en file audio, ms.
+    /// From the request to queuing the audio, ms.
     pub last_latency_ms: Option<f64>,
-    /// Instant de la dernière mise en file audio (premier son d'une phrase).
+    /// Time of the last audio queuing (first sound of a sentence).
     pub last_play_at: Option<Instant>,
     pub cached: usize,
 }
@@ -53,8 +53,8 @@ pub struct Speaker {
 }
 
 impl Speaker {
-    /// `make_tts` construit le moteur dans le thread de parole ; il reçoit une
-    /// fonction pour publier sa progression (téléchargement, chargement).
+    /// `make_tts` builds the engine in the speech thread; it receives a function
+    /// to report its progress (download, loading).
     pub fn spawn<F>(make_tts: F, sink: Arc<dyn AudioSink>) -> Self
     where
         F: FnOnce(&dyn Fn(String)) -> Result<Box<dyn Tts>, VoiceError> + Send + 'static,
@@ -82,9 +82,9 @@ impl Speaker {
                             t
                         }
                         Err(e) => {
-                            tracing::warn!("TTS indisponible : {e}");
+                            tracing::warn!("TTS unavailable: {e}");
                             status.lock().unwrap().state = SpeakerState::Error(e.to_string());
-                            // On continue à vider les commandes pour ne rien bloquer.
+                            // Keep draining commands so nothing blocks.
                             for cmd in rx {
                                 if let Cmd::Say(..) = cmd {
                                     pending.store(false, Ordering::Release);
@@ -107,7 +107,7 @@ impl Speaker {
                                 Some((a, Some(t.elapsed().as_secs_f64() * 1e3)))
                             }
                             Err(e) => {
-                                tracing::warn!("synthèse de « {text} » : {e}");
+                                tracing::warn!("synthesizing \"{text}\": {e}");
                                 None
                             }
                         }
@@ -133,7 +133,7 @@ impl Speaker {
                         }
                     }
                 })
-                .expect("démarrage du thread de parole");
+                .expect("failed to start the speech thread");
         }
         Speaker {
             tx,
@@ -154,12 +154,12 @@ impl Speaker {
         self.sink.stop();
     }
 
-    /// Une phrase est demandée ou en cours de lecture.
+    /// A sentence is requested or playing.
     pub fn is_speaking(&self) -> bool {
         self.pending.load(Ordering::Acquire) || self.sink.is_playing()
     }
 
-    /// Durée de la phrase : exacte si elle est en cache, estimée sinon.
+    /// Sentence duration: exact if cached, estimated otherwise.
     pub fn duration(&self, text: &str) -> f64 {
         self.cache
             .lock()
@@ -191,27 +191,27 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("délai dépassé");
+        panic!("timed out");
     }
 
     #[test]
     fn prepares_says_and_stops() {
         let sp = Speaker::spawn(
             |report| {
-                report("chargement".into());
+                report("loading".into());
                 Ok(Box::new(SilentTts::default()) as Box<dyn Tts>)
             },
             Arc::new(NullSink::default()),
         );
         wait_until(|| sp.status().state == SpeakerState::Ready);
-        sp.prepare(&["Bonjour".to_string()]);
+        sp.prepare(&["Hello".to_string()]);
         wait_until(|| sp.status().cached == 1);
-        assert!((sp.duration("Bonjour") - estimate_duration("Bonjour")).abs() < 0.01);
+        assert!((sp.duration("Hello") - estimate_duration("Hello")).abs() < 0.01);
 
-        sp.say("Bonjour");
+        sp.say("Hello");
         assert!(sp.is_speaking());
         wait_until(|| sp.status().last_latency_ms.is_some());
-        assert_eq!(sp.status().last_synthesis_ms, None, "phrase en cache");
+        assert_eq!(sp.status().last_synthesis_ms, None, "sentence cached");
         sp.stop();
         wait_until(|| !sp.is_speaking());
     }

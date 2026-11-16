@@ -1,10 +1,9 @@
-//! Sortie audio.
+//! Audio output.
 //!
-//! [`CpalSink`] joue sur le périphérique par défaut (WASAPI sous Windows) : un
-//! thread garde le flux cpal ouvert et le rappel audio puise dans une file
-//! d'échantillons. [`NullSink`] simule la lecture en temps réel quand aucun
-//! périphérique n'est disponible (serveur, CI) : l'enchaînement des consignes
-//! reste correct.
+//! [`CpalSink`] plays on the default device (WASAPI on Windows): a thread keeps
+//! the cpal stream open and the audio callback pulls from a sample queue.
+//! [`NullSink`] simulates real-time playback when no device is available
+//! (server, CI), so cue sequencing stays correct.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -14,14 +13,14 @@ use crate::{Audio, VoiceError};
 
 pub trait AudioSink: Send + Sync {
     fn name(&self) -> String;
-    /// Met l'audio en file ; retourne immédiatement.
+    /// Queues the audio; returns immediately.
     fn play(&self, audio: &Audio);
-    /// Coupe la lecture (fondu de quelques millisecondes).
+    /// Stops playback (fade of a few milliseconds).
     fn stop(&self);
     fn is_playing(&self) -> bool;
 }
 
-/// Lecture simulée : occupe la durée de l'audio sans rien jouer.
+/// Simulated playback: lasts the audio duration without playing anything.
 #[derive(Default)]
 pub struct NullSink {
     until: Mutex<Option<Instant>>,
@@ -29,7 +28,7 @@ pub struct NullSink {
 
 impl AudioSink for NullSink {
     fn name(&self) -> String {
-        "aucune sortie audio".into()
+        "no audio output".into()
     }
 
     fn play(&self, audio: &Audio) {
@@ -52,7 +51,7 @@ impl AudioSink for NullSink {
     }
 }
 
-/// Rééchantillonnage linéaire (suffisant pour de la voix).
+/// Linear resampling (good enough for voice).
 pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to || samples.is_empty() || from == 0 || to == 0 {
         return samples.to_vec();
@@ -83,15 +82,15 @@ pub struct CpalSink {
 }
 
 impl CpalSink {
-    /// Ouvre le périphérique de sortie par défaut.
+    /// Opens the default output device.
     pub fn open() -> Result<Self, VoiceError> {
         let queue = Arc::new(Mutex::new(Queue {
             samples: VecDeque::new(),
         }));
         let (tx, rx) = crossbeam_channel::bounded::<Result<(u32, String), String>>(1);
         let q = queue.clone();
-        // Le flux cpal n'est pas `Send` sur toutes les plateformes : il vit et
-        // meurt dans son thread.
+        // The cpal stream is not `Send` on every platform: it lives and dies in
+        // its own thread.
         let thread = std::thread::Builder::new()
             .name("audio-out".into())
             .spawn(move || {
@@ -105,7 +104,7 @@ impl CpalSink {
                         return;
                     }
                 };
-                // Garde le flux ouvert pour la durée du programme.
+                // Keep the stream open for the lifetime of the program.
                 loop {
                     std::thread::park();
                     let _ = &stream;
@@ -120,7 +119,7 @@ impl CpalSink {
                 _thread: thread,
             }),
             Ok(Err(e)) => Err(VoiceError::Output(e)),
-            Err(_) => Err(VoiceError::Output("le périphérique ne répond pas".into())),
+            Err(_) => Err(VoiceError::Output("the device is not responding".into())),
         }
     }
 }
@@ -130,13 +129,11 @@ fn open_stream(queue: Arc<Mutex<Queue>>) -> Result<(cpal::Stream, u32, String), 
     use cpal::{FromSample, SampleFormat, SizedSample};
 
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or("aucun périphérique de sortie")?;
+    let device = host.default_output_device().ok_or("no output device")?;
     let name = device
         .description()
         .map(|d| d.to_string())
-        .unwrap_or_else(|_| "sortie par défaut".into());
+        .unwrap_or_else(|_| "default output".into());
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
@@ -161,7 +158,7 @@ fn open_stream(queue: Arc<Mutex<Queue>>) -> Result<(cpal::Stream, u32, String), 
                         }
                     }
                 },
-                |e| tracing::warn!("sortie audio : {e}"),
+                |e| tracing::warn!("audio output: {e}"),
                 None,
             )
             .map_err(|e| e.to_string())
@@ -172,7 +169,7 @@ fn open_stream(queue: Arc<Mutex<Queue>>) -> Result<(cpal::Stream, u32, String), 
         SampleFormat::I16 => build::<i16>(&device, config, channels, queue),
         SampleFormat::I32 => build::<i32>(&device, config, channels, queue),
         SampleFormat::U16 => build::<u16>(&device, config, channels, queue),
-        other => Err(format!("format d'échantillon non géré : {other}")),
+        other => Err(format!("unsupported sample format: {other}")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
     Ok((stream, rate, name))
@@ -190,7 +187,7 @@ impl AudioSink for CpalSink {
 
     fn stop(&self) {
         let mut q = self.queue.lock().unwrap();
-        // Fondu de 15 ms pour éviter un clic.
+        // 15 ms fade to avoid a click.
         let n = (self.sample_rate as usize * 15 / 1000).min(q.samples.len());
         let fade: Vec<f32> = q
             .samples

@@ -1,6 +1,6 @@
 [package]
 name = "input"
-description = "Périphériques d'entrée lus en arrière-plan : clavier, souris, volants, boîtiers, manettes ; capture de liaison et push-to-talk"
+description = "Input devices read in the background: keyboard, mouse, wheels, button boxes, gamepads; binding capture and push-to-talk"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

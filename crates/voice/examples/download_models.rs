@@ -1,6 +1,6 @@
-//! Télécharge les modèles vocaux (Piper siwis, et Parakeet avec `--stt`).
+//! Downloads the voice models (Piper siwis, plus Parakeet with `--stt`).
 //!
-//! `cargo run -p voice --example download_models [dossier] [--stt]`
+//! `cargo run -p voice --example download_models [dir] [--stt]`
 
 use voice::models::{PARAKEET_V3_INT8, PIPER_FR_SIWIS, ensure, models_dir};
 
@@ -21,10 +21,10 @@ fn main() {
             let pct = (done * 100).checked_div(total).unwrap_or(0);
             if pct >= last + 10 {
                 last = pct;
-                println!("{} : {pct} %", spec.dir_name());
+                println!("{}: {pct} %", spec.dir_name());
             }
         })
-        .unwrap_or_else(|e| panic!("{} : {e}", spec.repo));
+        .unwrap_or_else(|e| panic!("{}: {e}", spec.repo));
         println!("{} → {}", spec.repo, path.display());
     }
 }

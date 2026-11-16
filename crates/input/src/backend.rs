@@ -1,24 +1,24 @@
-//! Sources d'entrées : chacune ajoute les entrées actuellement enfoncées.
+//! Input sources: each one adds the inputs currently held.
 
 use std::collections::HashSet;
 
 use crate::Binding;
 
 pub trait Backend: Send {
-    /// Ajoute à `out` toutes les entrées enfoncées en ce moment.
+    /// Adds to `out` every input held right now.
     fn poll(&mut self, out: &mut HashSet<Binding>);
-    /// Périphériques connus (affichage).
+    /// Known devices (for display).
     fn devices(&self) -> Vec<String> {
         vec![]
     }
 }
 
-/// Clavier et souris, état global.
+/// Keyboard and mouse, global state.
 pub struct KeyboardMouse {
     state: device_query::DeviceState,
 }
 
-// SAFETY : DeviceState n'est utilisé que depuis le thread des entrées.
+// SAFETY: DeviceState is only used from the input thread.
 unsafe impl Send for KeyboardMouse {}
 
 impl KeyboardMouse {
@@ -46,33 +46,33 @@ impl Backend for KeyboardMouse {
     }
 }
 
-/// Sources disponibles sur la plateforme.
+/// Sources available on the platform.
 pub fn platform_backends() -> Vec<Box<dyn Backend>> {
     let mut v: Vec<Box<dyn Backend>> = vec![];
     match KeyboardMouse::new() {
         Some(km) => v.push(Box::new(km)),
-        None => tracing::warn!("clavier et souris indisponibles (pas d'affichage ?)"),
+        None => tracing::warn!("keyboard and mouse unavailable (no display?)"),
     }
     #[cfg(windows)]
     match dinput::DirectInput::new() {
         Ok(di) => v.push(Box::new(di)),
-        Err(e) => tracing::warn!("DirectInput indisponible : {e}"),
+        Err(e) => tracing::warn!("DirectInput unavailable: {e}"),
     }
     #[cfg(not(windows))]
     match gilrs::Gilrs::new() {
         Ok(g) => v.push(Box::new(Gamepads { gilrs: g })),
-        Err(e) => tracing::warn!("manettes indisponibles : {e}"),
+        Err(e) => tracing::warn!("gamepads unavailable: {e}"),
     }
     v
 }
 
-/// Manettes et volants sous Linux (evdev, fonctionne en arrière-plan).
+/// Gamepads and wheels on Linux (evdev, works in the background).
 #[cfg(not(windows))]
 pub struct Gamepads {
     gilrs: gilrs::Gilrs,
 }
 
-// SAFETY : Gilrs n'est utilisé que depuis le thread des entrées.
+// SAFETY: Gilrs is only used from the input thread.
 #[cfg(not(windows))]
 unsafe impl Send for Gamepads {}
 
@@ -103,7 +103,7 @@ impl Backend for Gamepads {
     }
 }
 
-/// Directions d'un chapeau (POV) à partir de son angle en centièmes de degré.
+/// Hat (POV) directions from its angle in hundredths of a degree.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn pov_directions(value: u32) -> Vec<u8> {
     if value & 0xFFFF == 0xFFFF {
@@ -128,11 +128,11 @@ pub fn pov_directions(value: u32) -> Vec<u8> {
 
 #[cfg(windows)]
 mod dinput {
-    //! DirectInput 8 : périphériques de jeu en arrière-plan, non exclusif.
+    //! DirectInput 8: game devices in the background, non-exclusive.
     //!
-    //! Format de données maison (la crate `windows` n'expose pas
-    //! `c_dfDIJoystick2`) : 128 boutons et 4 chapeaux, tous facultatifs, pour
-    //! accepter n'importe quel volant, pédalier ou boîtier.
+    //! Custom data format (the `windows` crate does not expose
+    //! `c_dfDIJoystick2`): 128 buttons and 4 hats, all optional, to accept any
+    //! wheel, pedal set or button box.
 
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
@@ -170,12 +170,12 @@ mod dinput {
         hwnd: HWND,
         devices: Vec<Device>,
         last_enum: Instant,
-        // Doivent rester valides tant que les périphériques sont ouverts.
+        // Must stay valid as long as the devices are open.
         _objects: Box<[DIOBJECTDATAFORMAT; BUTTONS + POVS]>,
         format: Box<DIDATAFORMAT>,
     }
 
-    // SAFETY : les objets COM DirectInput ne sont utilisés que depuis le thread des entrées.
+    // SAFETY: the DirectInput COM objects are only used from the input thread.
     unsafe impl Send for DirectInput {}
 
     fn wide(s: &[u16]) -> String {
@@ -208,8 +208,8 @@ mod dinput {
                     None,
                 )?;
                 let di = IDirectInput8W::from_raw(raw);
-                // Fenêtre cachée : DirectInput exige une fenêtre de premier niveau,
-                // même en mode arrière-plan.
+                // Hidden window: DirectInput requires a top-level window, even in
+                // background mode.
                 let hwnd = CreateWindowExW(
                     WINDOW_EX_STYLE(0),
                     w!("STATIC"),
@@ -264,7 +264,7 @@ mod dinput {
             }
         }
 
-        /// Ouvre les périphériques de jeu nouvellement branchés.
+        /// Opens newly plugged-in game devices.
         fn enumerate(&mut self) {
             self.last_enum = Instant::now();
             let mut list: Vec<DIDEVICEINSTANCEW> = vec![];
@@ -275,7 +275,7 @@ mod dinput {
                     &mut list as *mut _ as *mut core::ffi::c_void,
                     DIEDFL_ATTACHEDONLY,
                 ) {
-                    tracing::warn!("énumération DirectInput : {e}");
+                    tracing::warn!("DirectInput enumeration: {e}");
                     return;
                 }
             }
@@ -287,7 +287,7 @@ mod dinput {
                 let name = wide(&inst.tszProductName);
                 match self.open(&inst) {
                     Ok(device) => {
-                        tracing::info!("périphérique : {name}");
+                        tracing::info!("device: {name}");
                         self.devices.push(Device {
                             device,
                             name,
@@ -295,7 +295,7 @@ mod dinput {
                             failures: 0,
                         });
                     }
-                    Err(e) => tracing::warn!("ouverture de {name} : {e}"),
+                    Err(e) => tracing::warn!("opening {name}: {e}"),
                 }
             }
         }
@@ -360,7 +360,7 @@ mod dinput {
                     }
                 }
             }
-            // Débranché : on le retire, l'énumération le rouvrira s'il revient.
+            // Unplugged: remove it; enumeration will reopen it if it comes back.
             self.devices.retain(|d| d.failures < 200);
         }
 

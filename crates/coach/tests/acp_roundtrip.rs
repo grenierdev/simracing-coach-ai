@@ -1,5 +1,5 @@
-//! Client ACP face à un faux agent en processus : configuration de session,
-//! flux de réponse, appel réel à notre serveur MCP, permissions, latence.
+//! ACP client against an in-process fake agent: session configuration, reply
+//! streaming, real call to our MCP server, permissions, latency.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -56,7 +56,7 @@ fn lap(samples: Vec<telemetry::Sample>, number: i32) -> Arc<Lap> {
     })
 }
 
-/// Ce que le faux agent a reçu au `session/new`.
+/// What the fake agent received on `session/new`.
 #[derive(Default, Debug)]
 struct Seen {
     system_prompt_override: bool,
@@ -78,8 +78,8 @@ fn permission(
         session,
         ToolCallUpdate::new("p1", ToolCallUpdateFields::new().name(tool.to_string())),
         vec![
-            PermissionOption::new("ok", "Autoriser", PermissionOptionKind::AllowOnce),
-            PermissionOption::new("non", "Refuser", PermissionOptionKind::RejectOnce),
+            PermissionOption::new("ok", "Allow", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("no", "Deny", PermissionOptionKind::RejectOnce),
         ],
     )
 }
@@ -140,13 +140,13 @@ fn mock_agent(seen: Arc<Mutex<Seen>>) -> impl agent_client_protocol::ConnectTo<C
                     s.mcp.clone()
                 };
                 let sid = req.session_id.clone();
-                // Le travail se fait hors de la boucle de distribution.
+                // The work runs outside the dispatch loop.
                 tokio::spawn(async move {
                     let send = |u: SessionUpdate| {
                         cx.send_notification(SessionNotification::new(sid.clone(), u))
                     };
-                    send(text("Je regarde. ")).unwrap();
-                    // Permissions : outil du coach puis outil intégré.
+                    send(text("Looking. ")).unwrap();
+                    // Permissions: coach tool, then built-in tool.
                     let ok = cx
                         .send_request(permission(sid.clone(), "mcp__coach__get_session_overview"))
                         .block_task()
@@ -159,11 +159,11 @@ fn mock_agent(seen: Arc<Mutex<Seen>>) -> impl agent_client_protocol::ConnectTo<C
                         .unwrap();
                     let selected = |o: &RequestPermissionOutcome| match o {
                         RequestPermissionOutcome::Selected(s) => s.option_id.to_string(),
-                        _ => "annulé".into(),
+                        _ => "cancelled".into(),
                     };
                     let perms = format!("[{}/{}] ", selected(&ok.outcome), selected(&bash.outcome));
                     send(text(&perms)).unwrap();
-                    // Vrai appel MCP vers le serveur du programme.
+                    // Real MCP call to the program's server.
                     if let Some((_, url, header)) = mcp {
                         send(SessionUpdate::ToolCall(ToolCall::new(
                             "t1",
@@ -189,7 +189,7 @@ fn mock_agent(seen: Arc<Mutex<Seen>>) -> impl agent_client_protocol::ConnectTo<C
                             .unwrap()
                             .to_string();
                         client.cancel().await.unwrap();
-                        send(text(&format!("Le plus coûteux : {worst}."))).unwrap();
+                        send(text(&format!("Most costly: {worst}."))).unwrap();
                     }
                     responder
                         .respond(PromptResponse::new(StopReason::EndTurn))
@@ -212,7 +212,7 @@ fn wait_for(agent: &CoachAgent, pred: impl Fn(&CoachEvent) -> bool, log: &mut Ve
             }
         }
     }
-    panic!("événement attendu non reçu ; reçus : {log:#?}");
+    panic!("expected event not received; received: {log:#?}");
 }
 
 #[test]
@@ -263,8 +263,8 @@ fn full_turn_with_mcp_call_and_permissions() {
 
     {
         let s = seen.lock().unwrap();
-        assert!(s.system_prompt_override, "prompt système en override");
-        assert!(s.system_prompt.contains("Coach de pilotage"));
+        assert!(s.system_prompt_override, "system prompt in override mode");
+        assert!(s.system_prompt.contains("Driving coach"));
         let meta = s.meta.as_ref().unwrap();
         let opts = &meta["claudeCode"]["options"];
         assert_eq!(opts["tools"], serde_json::json!([]));
@@ -290,12 +290,12 @@ fn full_turn_with_mcp_call_and_permissions() {
             _ => None,
         })
         .collect();
-    assert!(reply.starts_with("Je regarde. "), "{reply}");
+    assert!(reply.starts_with("Looking. "), "{reply}");
     assert!(
-        reply.contains("[ok/non]"),
-        "coach autorisé, Bash refusé : {reply}"
+        reply.contains("[ok/no]"),
+        "coach allowed, Bash denied: {reply}"
     );
-    assert!(reply.contains("Le plus coûteux : T"), "{reply}");
+    assert!(reply.contains("Most costly: T"), "{reply}");
     let perms: Vec<(String, bool)> = log
         .iter()
         .filter_map(|e| match e {
@@ -325,7 +325,7 @@ fn full_turn_with_mcp_call_and_permissions() {
             _ => None,
         })
         .unwrap();
-    let first = latency.first_chunk_ms.expect("latence du premier morceau");
+    let first = latency.first_chunk_ms.expect("first chunk latency");
     assert!(first <= latency.total_ms);
     assert_eq!(seen.lock().unwrap().prompts.len(), 1);
 }
@@ -339,7 +339,7 @@ fn missing_adapter_reports_failure() {
         .unwrap();
     let cfg = AgentConfig {
         label: "conversation".into(),
-        command: vec!["programme-qui-n-existe-pas-acp".into()],
+        command: vec!["nonexistent-program-acp".into()],
         model: None,
         disable_thinking: false,
         env: vec![],
