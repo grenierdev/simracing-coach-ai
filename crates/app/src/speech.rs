@@ -1,11 +1,10 @@
-//! Mise en place de la voix : modèle, moteur, sortie audio, et adaptation au
-//! moteur de consignes.
+//! Voice setup: model, engine, audio output, and adapter to the cue engine.
 
 use std::sync::Arc;
 
 use voice::{AudioSink, CpalSink, NullSink, SilentTts, Speaker, Tts};
 
-/// Démarre le thread de parole. Le modèle est téléchargé au premier lancement.
+/// Starts the speech thread. The model is downloaded on first launch.
 pub fn start_speaker(no_voice: bool) -> Arc<Speaker> {
     let sink: Arc<dyn AudioSink> = if no_voice {
         Arc::new(NullSink::default())
@@ -13,7 +12,7 @@ pub fn start_speaker(no_voice: bool) -> Arc<Speaker> {
         match CpalSink::open() {
             Ok(s) => Arc::new(s),
             Err(e) => {
-                tracing::warn!("{e} : les consignes seront affichées sans son");
+                tracing::warn!("{e}: cues will be shown without sound");
                 Arc::new(NullSink::default())
             }
         }
@@ -33,9 +32,9 @@ fn make_tts(no_voice: bool, report: &dyn Fn(String)) -> Result<Box<dyn Tts>, voi
     let dir = models_dir();
     let path = ensure(&PIPER_FR_SIWIS, &dir, |done, total| {
         let pct = (done * 100).checked_div(total).unwrap_or(0);
-        report(format!("téléchargement de la voix : {pct} %"));
+        report(format!("downloading voice: {pct}%"));
     })?;
-    report("chargement de la voix".into());
+    report("loading voice".into());
     Ok(Box::new(voice::sherpa::SherpaTts::piper(&path, 2)?))
 }
 
@@ -44,7 +43,7 @@ fn make_tts(_no_voice: bool, _report: &dyn Fn(String)) -> Result<Box<dyn Tts>, v
     Ok(Box::new(SilentTts::default()))
 }
 
-/// Reconnaissance vocale : Parakeet v3, téléchargé au premier lancement (~670 Mo).
+/// Speech recognition: Parakeet v3, downloaded on first launch (~670 MB).
 pub fn start_listener() -> voice::Listener {
     voice::Listener::spawn(make_stt)
 }
@@ -55,22 +54,20 @@ fn make_stt(report: &dyn Fn(String)) -> Result<Box<dyn voice::Stt>, voice::Voice
     let dir = models_dir();
     let path = ensure(&PARAKEET_V3_INT8, &dir, |done, total| {
         let pct = (done * 100).checked_div(total).unwrap_or(0);
-        report(format!(
-            "téléchargement de la reconnaissance vocale : {pct} %"
-        ));
+        report(format!("downloading speech recognition: {pct}%"));
     })?;
-    report("chargement de la reconnaissance vocale".into());
+    report("loading speech recognition".into());
     Ok(Box::new(voice::sherpa::SherpaStt::parakeet(&path, 2)?))
 }
 
 #[cfg(not(feature = "voice-sherpa"))]
 fn make_stt(_report: &dyn Fn(String)) -> Result<Box<dyn voice::Stt>, voice::VoiceError> {
     Err(voice::VoiceError::Engine(
-        "reconnaissance vocale non compilée (feature sherpa)".into(),
+        "speech recognition not compiled in (sherpa feature)".into(),
     ))
 }
 
-/// Le moteur de consignes parle à travers ce trait.
+/// The cue engine speaks through this trait.
 pub struct SpeakerOutput(pub Arc<Speaker>);
 
 impl triggers::SpeechOutput for SpeakerOutput {

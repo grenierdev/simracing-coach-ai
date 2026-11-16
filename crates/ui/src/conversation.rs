@@ -1,14 +1,14 @@
-//! Boucle de conversation, hors de l'interface : push-to-talk, micro,
-//! reconnaissance vocale, Claude, réponse dite phrase par phrase.
+//! Conversation loop, outside the UI: push-to-talk, microphone, speech
+//! recognition, Claude, reply spoken sentence by sentence.
 //!
-//! - appui : le coach se tait, la réponse en cours est interrompue, le micro enregistre ;
-//! - relâchement : l'enregistrement part en transcription ;
-//! - texte reconnu : envoyé à Claude avec le contexte du pilote ;
-//! - chaque phrase de la réponse passe par le moteur de consignes (`say`), donc
-//!   par la règle du silence au freinage.
+//! - press: the coach goes quiet, the current reply is interrupted, the microphone records;
+//! - release: the recording goes to transcription;
+//! - recognized text: sent to Claude with the driver context;
+//! - each sentence of the reply goes through the cue engine (`say`), hence
+//!   through the quiet-while-braking rule.
 //!
-//! Latence mesurée par tour vocal : fin de parole → texte → premier mot de
-//! Claude → premier son.
+//! Latency measured per voice turn: end of speech → text → Claude's first
+//! word → first sound.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,9 +21,9 @@ use telemetry::SnapshotHandle;
 use triggers::{SayWhen, TriggerRuntime};
 use voice::{Listener, Microphone, Speaker};
 
-use crate::chat::pilot_context;
+use crate::chat::driver_context;
 
-/// Latence d'un tour vocal, ms depuis la fin de parole.
+/// Latency of a voice turn, ms since the end of speech.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct VoiceLatency {
     pub transcript_ms: Option<f64>,
@@ -34,14 +34,14 @@ pub struct VoiceLatency {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConvEvent {
     Agent(CoachEvent),
-    /// Message du pilote envoyé à Claude (`voice` : dicté).
-    Pilot {
+    /// Driver message sent to Claude (`voice`: dictated).
+    Driver {
         turn: u64,
         text: String,
         voice: bool,
     },
     Recording(bool),
-    /// Rien de compréhensible dans l'enregistrement.
+    /// Nothing intelligible in the recording.
     NotUnderstood,
     Latency(VoiceLatency),
 }
@@ -76,7 +76,7 @@ impl Conversation {
             std::thread::Builder::new()
                 .name("conversation".into())
                 .spawn(move || run(deps, etx, trx, crx, speak))
-                .expect("démarrage du thread de conversation");
+                .expect("starting the conversation thread");
         }
         Conversation {
             events: erx,
@@ -91,12 +91,12 @@ impl Conversation {
         &self.events
     }
 
-    /// Message tapé au clavier.
+    /// Message typed on the keyboard.
     pub fn send_text(&self, text: impl Into<String>) {
         let _ = self.typed.send(text.into());
     }
 
-    /// Interrompt la réponse en cours et la parole du coach.
+    /// Interrupts the current reply and the coach's speech.
     pub fn cancel(&self) {
         let _ = self.cancel.send(());
     }
@@ -147,7 +147,7 @@ fn run(
         let snap = deps.snapshot.get();
         let analyzer = deps.triggers.analyzer();
         let status = deps.triggers.status();
-        let ctx = pilot_context(&snap, analyzer.as_deref(), &status);
+        let ctx = driver_context(&snap, analyzer.as_deref(), &status);
         Some(agent.prompt(format_prompt(&ctx, text)))
     };
     let interrupt = |busy: bool| {
@@ -195,7 +195,7 @@ fn run(
                     };
                     if let Some(turn) = send_prompt(&t.text) {
                         voice_turn = Some(VoiceTurn { turn, released, latency, first_word_at: None });
-                        let _ = out.send(ConvEvent::Pilot { turn, text: t.text.clone(), voice: true });
+                        let _ = out.send(ConvEvent::Driver { turn, text: t.text.clone(), voice: true });
                         let _ = out.send(ConvEvent::Latency(latency));
                     }
                 }
@@ -204,7 +204,7 @@ fn run(
             recv(typed) -> t => match t {
                 Ok(text) => {
                     if let Some(turn) = send_prompt(&text) {
-                        let _ = out.send(ConvEvent::Pilot { turn, text, voice: false });
+                        let _ = out.send(ConvEvent::Driver { turn, text, voice: false });
                     }
                 }
                 Err(_) => break,
@@ -245,7 +245,7 @@ fn run(
             },
             default(Duration::from_millis(20)) => {}
         }
-        // Premier son du tour vocal : première mise en file audio après le premier mot.
+        // First sound of the voice turn: first audio enqueue after the first word.
         if let Some(v) = voice_turn.as_mut()
             && v.latency.first_sound_ms.is_none()
             && let (Some(fw), Some(played)) = (v.first_word_at, deps.speaker.status().last_play_at)
@@ -257,5 +257,5 @@ fn run(
     }
 }
 
-/// Dernière latence connue, pour l'affichage.
+/// Last known latency, for display.
 pub type SharedLatency = Arc<Mutex<Option<VoiceLatency>>>;

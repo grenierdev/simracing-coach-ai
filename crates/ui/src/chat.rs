@@ -1,5 +1,5 @@
-//! Conversation avec le coach : journal, application des événements ACP,
-//! contexte injecté dans chaque message.
+//! Conversation with the coach: log, application of ACP events, context
+//! injected into each message.
 
 use analysis::Analyzer;
 use coach::{AgentStatus, CoachEvent, PilotContext, TurnLatency};
@@ -20,7 +20,7 @@ pub struct ChatEntry {
     pub who: Who,
     pub text: String,
     pub turn: Option<u64>,
-    /// Pour un appel d'outil : (identifiant ACP, nom court, durée mesurée côté MCP).
+    /// For a tool call: (ACP identifier, short name, duration measured on the MCP side).
     pub tool: Option<(String, String, Option<f64>)>,
 }
 
@@ -60,7 +60,7 @@ impl Chat {
         self.push(Who::System, text.into(), None);
     }
 
-    pub fn pilot_message(&mut self, text: &str, turn: u64) {
+    pub fn driver_message(&mut self, text: &str, turn: u64) {
         self.push(Who::Driver, text.trim().to_string(), Some(turn));
     }
 
@@ -68,7 +68,7 @@ impl Chat {
         match e {
             CoachEvent::Status(s) => {
                 if let AgentStatus::Failed(err) = &s {
-                    self.push(Who::System, format!("Agent arrêté : {err}"), None);
+                    self.push(Who::System, format!("Agent stopped: {err}"), None);
                 }
                 self.status = Some(s);
             }
@@ -83,8 +83,8 @@ impl Chat {
                 }
             }
             CoachEvent::ToolCall { turn, id, name, .. } => {
-                // Une ligne par appel, à sa place dans le fil ; la durée mesurée
-                // côté serveur MCP s'y rattache ensuite (`sync_tools`).
+                // One line per call, in its place in the thread; the duration
+                // measured on the MCP server side is attached later (`sync_tools`).
                 let known = self.entries.iter().rev().take(20).any(|e| {
                     e.turn == Some(turn) && e.tool.as_ref().is_some_and(|(i, _, _)| *i == id)
                 });
@@ -98,17 +98,17 @@ impl Chat {
             }
             CoachEvent::Permission { tool, allowed } => {
                 if !allowed {
-                    self.push(Who::System, format!("Outil refusé : {tool}"), None);
+                    self.push(Who::System, format!("Tool denied: {tool}"), None);
                 }
             }
             CoachEvent::TurnEnd { latency, .. } => {
                 self.last_latency = Some(latency);
             }
-            CoachEvent::Error(err) => self.push(Who::System, format!("Erreur : {err}"), None),
+            CoachEvent::Error(err) => self.push(Who::System, format!("Error: {err}"), None),
         }
     }
 
-    /// Ajoute les appels d'outils reçus par le serveur MCP depuis le dernier passage.
+    /// Adds the tool calls received by the MCP server since the last pass.
     pub fn sync_tools(&mut self, log: &[ToolCallLog]) {
         if log.len() < self.tools_seen {
             self.tools_seen = 0;
@@ -117,7 +117,7 @@ impl Chat {
             .iter()
             .filter(|t| t.source.is_empty() || t.source == "conversation")
         {
-            let mark = if t.ok { "" } else { " (erreur)" };
+            let mark = if t.ok { "" } else { " (error)" };
             let text = format!("{} · {:.0} ms{mark}", t.name, t.millis);
             let pending = self.entries.iter_mut().rev().take(20).find(|e| {
                 e.tool
@@ -143,8 +143,8 @@ impl Chat {
     }
 }
 
-/// Contexte du pilote au moment où il parle.
-pub fn pilot_context(
+/// Driver context at the moment they speak.
+pub fn driver_context(
     snap: &LiveSnapshot,
     analyzer: Option<&Analyzer>,
     coach: &RuntimeStatus,
@@ -205,14 +205,14 @@ mod tests {
     #[test]
     fn chunks_of_a_turn_are_merged() {
         let mut c = Chat::default();
-        c.pilot_message("où je perds ?", 1);
+        c.driver_message("where am I losing time?", 1);
         c.apply(CoachEvent::Chunk {
             turn: 1,
-            text: "Je regarde. ".into(),
+            text: "Let me look. ".into(),
         });
         c.apply(CoachEvent::Chunk {
             turn: 1,
-            text: "Le T4.".into(),
+            text: "T4.".into(),
         });
         c.sync_tools(&[ToolCallLog {
             source: "conversation".into(),
@@ -222,11 +222,11 @@ mod tests {
         }]);
         c.apply(CoachEvent::Chunk {
             turn: 2,
-            text: "Autre.".into(),
+            text: "Other.".into(),
         });
         let who: Vec<Who> = c.entries.iter().map(|e| e.who).collect();
         assert_eq!(who, vec![Who::Driver, Who::Coach, Who::Tool, Who::Coach]);
-        assert_eq!(c.entries[1].text, "Je regarde. Le T4.");
+        assert_eq!(c.entries[1].text, "Let me look. T4.");
         assert_eq!(c.entries[2].text, "get_session_overview · 3 ms");
         c.sync_tools(&[ToolCallLog {
             source: "conversation".into(),
@@ -234,16 +234,16 @@ mod tests {
             ok: true,
             millis: 3.2,
         }]);
-        assert_eq!(c.entries.len(), 4, "pas de doublon");
+        assert_eq!(c.entries.len(), 4, "no duplicate");
     }
 
     #[test]
     fn tool_line_stays_between_ack_and_answer() {
         let mut c = Chat::default();
-        c.pilot_message("et au T4 ?", 1);
+        c.driver_message("and in T4?", 1);
         c.apply(CoachEvent::Chunk {
             turn: 1,
-            text: "Je regarde. ".into(),
+            text: "Let me look. ".into(),
         });
         c.apply(CoachEvent::ToolCall {
             turn: 1,
@@ -253,9 +253,9 @@ mod tests {
         });
         c.apply(CoachEvent::Chunk {
             turn: 1,
-            text: "Tu freines ".into(),
+            text: "You brake ".into(),
         });
-        // La durée arrive après le début de la réponse : elle complète la ligne existante.
+        // The duration arrives after the reply has started: it completes the existing line.
         c.sync_tools(&[ToolCallLog {
             source: "conversation".into(),
             name: "get_corner_summary".into(),
@@ -264,7 +264,7 @@ mod tests {
         }]);
         c.apply(CoachEvent::Chunk {
             turn: 1,
-            text: "trop tôt.".into(),
+            text: "too early.".into(),
         });
         c.apply(CoachEvent::ToolCall {
             turn: 1,
@@ -276,10 +276,10 @@ mod tests {
         assert_eq!(
             texts,
             vec![
-                "et au T4 ?",
-                "Je regarde. ",
+                "and in T4?",
+                "Let me look. ",
                 "get_corner_summary · 4 ms",
-                "Tu freines trop tôt."
+                "You brake too early."
             ]
         );
     }
@@ -305,7 +305,7 @@ mod tests {
             Some(track.length_m()),
             &CornerDetectionParams::default(),
         );
-        // Entre T3 et T4.
+        // Between T3 and T4.
         let between = (a.model.corners[2].end_pct + a.model.corners[3].start_pct) / 2.0;
         let snap = LiveSnapshot {
             sample: Some(Sample {
@@ -315,7 +315,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let ctx = pilot_context(&snap, Some(&a), &RuntimeStatus::default());
+        let ctx = driver_context(&snap, Some(&a), &RuntimeStatus::default());
         assert_eq!(ctx.lap, Some(3));
         assert_eq!(ctx.last_corner.as_deref(), Some("T3"));
         assert_eq!(ctx.next_corner.as_deref(), Some("T4"));

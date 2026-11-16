@@ -1,20 +1,20 @@
-//! Point d'entrée : choisit la source de télémétrie et lance l'interface.
+//! Entry point: picks the telemetry source and starts the UI.
 //!
 //! ```text
-//! simcoach                         télémétrie live iRacing (Windows)
-//! simcoach --replay session.ibt    rejoue un .ibt comme s'il était live
+//! simcoach                         live iRacing telemetry (Windows)
+//! simcoach --replay session.ibt    replays an .ibt as if it were live
 //!          [--speed 2.0] [--loop]
-//! simcoach --synthetic             rejoue une session synthétique générée en mémoire
-//! simcoach ... --reference ref.csv  tour de référence (CSV Garage61 ou .ibt)
-//! simcoach ... --plan plan.toml     plan de consignes
-//! simcoach ... --no-voice           consignes affichées sans être dites
-//! simcoach ... --no-agent           sans Claude (pas d'adaptateur ACP)
-//! simcoach ... --model sonnet       modèle de la conversation (défaut : haiku)
-//! simcoach ... --analysis-model opus  modèle de la planification (défaut : sonnet)
-//! simcoach ... --no-planning        sans session d'analyse
-//! simcoach --write-synthetic f.ibt écrit la session synthétique dans un fichier
-//! simcoach --write-synthetic-reference <dossier>
-//!                                  écrit un tour de référence synthétique (CSV Garage61)
+//! simcoach --synthetic             replays a synthetic session generated in memory
+//! simcoach ... --reference ref.csv  reference lap (Garage61 CSV or .ibt)
+//! simcoach ... --plan plan.toml     cue plan
+//! simcoach ... --no-voice           cues shown but not spoken
+//! simcoach ... --no-agent           without Claude (no ACP adapter)
+//! simcoach ... --model sonnet       conversation model (default: haiku)
+//! simcoach ... --analysis-model opus  planning model (default: sonnet)
+//! simcoach ... --no-planning        without analysis session
+//! simcoach --write-synthetic f.ibt writes the synthetic session to a file
+//! simcoach --write-synthetic-reference <folder>
+//!                                  writes a synthetic reference lap (Garage61 CSV)
 //! ```
 
 mod agent;
@@ -53,70 +53,57 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--replay" => args.replay = Some(it.next().context("--replay <fichier.ibt>")?.into()),
+            "--replay" => args.replay = Some(it.next().context("--replay <file.ibt>")?.into()),
             "--synthetic" => args.synthetic = true,
-            "--plan" => args.plan = Some(it.next().context("--plan <fichier.toml>")?.into()),
+            "--plan" => args.plan = Some(it.next().context("--plan <file.toml>")?.into()),
             "--no-voice" => args.no_voice = true,
             "--no-agent" => args.no_agent = true,
             "--no-planning" => args.no_planning = true,
             "--analysis-model" => {
-                args.analysis_model = Some(
-                    it.next()
-                        .context("--analysis-model <sonnet|opus|identifiant>")?,
-                )
+                args.analysis_model = Some(it.next().context("--analysis-model <sonnet|opus|id>")?)
             }
-            "--model" => {
-                args.model = Some(
-                    it.next()
-                        .context("--model <haiku|sonnet|opus|identifiant>")?,
-                )
-            }
+            "--model" => args.model = Some(it.next().context("--model <haiku|sonnet|opus|id>")?),
             "--reference" => {
-                args.reference = Some(
-                    it.next()
-                        .context("--reference <fichier .csv ou .ibt>")?
-                        .into(),
-                )
+                args.reference = Some(it.next().context("--reference <.csv or .ibt file>")?.into())
             }
             "--write-synthetic" => {
-                args.write_synthetic =
-                    Some(it.next().context("--write-synthetic <fichier>")?.into())
+                args.write_synthetic = Some(it.next().context("--write-synthetic <file>")?.into())
             }
             "--write-synthetic-reference" => {
                 args.write_synthetic_reference = Some(
                     it.next()
-                        .context("--write-synthetic-reference <dossier>")?
+                        .context("--write-synthetic-reference <folder>")?
                         .into(),
                 )
             }
             "--speed" => {
                 args.speed = it
                     .next()
-                    .context("--speed <facteur>")?
+                    .context("--speed <factor>")?
                     .parse()
-                    .context("--speed attend un nombre")?
+                    .context("--speed expects a number")?
             }
             "--loop" => args.looping = true,
             "-h" | "--help" => {
                 println!(
-                    "simcoach [--replay fichier.ibt [--speed X] [--loop]] [--synthetic] [--reference fichier.csv|.ibt] [--plan plan.toml] [--no-voice] [--no-agent] [--model haiku] [--analysis-model sonnet] [--no-planning] [--write-synthetic fichier.ibt] [--write-synthetic-reference dossier]"
+                    "simcoach [--replay file.ibt [--speed X] [--loop]] [--synthetic] [--reference file.csv|.ibt] [--plan plan.toml] [--no-voice] [--no-agent] [--model haiku] [--analysis-model sonnet] [--no-planning] [--write-synthetic file.ibt] [--write-synthetic-reference folder]"
                 );
                 std::process::exit(0);
             }
-            other => bail!("argument inconnu : {other}"),
+            other => bail!("unknown argument: {other}"),
         }
     }
     Ok(args)
 }
 
 fn main() -> anyhow::Result<()> {
-    // Claude passe par l'abonnement du CLI : une clé API dans l'environnement
-    // serait utilisée (et facturée) à sa place par l'adaptateur. Retirée avant
-    // tout démarrage de thread.
+    // Claude goes through the CLI subscription: an API key in the environment
+    // would be used (and billed) instead by the adapter. Removed before any
+    // thread starts.
     if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
-        // SAFETY : aucun autre thread n'existe encore.
+        // SAFETY: no other thread exists yet.
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
-        eprintln!("ANTHROPIC_API_KEY ignorée : le coach utilise l'abonnement du CLI Claude.");
+        eprintln!("ANTHROPIC_API_KEY ignored: the coach uses the Claude CLI subscription.");
     }
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -128,8 +115,8 @@ fn main() -> anyhow::Result<()> {
     if let Some(dir) = &args.write_synthetic_reference {
         let (name, csv) = synthetic_reference_csv();
         let path = dir.join(name);
-        std::fs::write(&path, csv).with_context(|| format!("écriture de {}", path.display()))?;
-        println!("Référence synthétique écrite dans {}", path.display());
+        std::fs::write(&path, csv).with_context(|| format!("writing {}", path.display()))?;
+        println!("Synthetic reference written to {}", path.display());
         return Ok(());
     }
 
@@ -137,13 +124,13 @@ fn main() -> anyhow::Result<()> {
         SyntheticTrack::demo()
             .session_ibt(10, 1)
             .write_to(path)
-            .with_context(|| format!("écriture de {}", path.display()))?;
-        println!("Session synthétique écrite dans {}", path.display());
+            .with_context(|| format!("writing {}", path.display()))?;
+        println!("Synthetic session written to {}", path.display());
         return Ok(());
     }
 
     let source: Box<dyn TelemetrySource> = if let Some(path) = &args.replay {
-        let file = IbtFile::open(path).with_context(|| format!("lecture de {}", path.display()))?;
+        let file = IbtFile::open(path).with_context(|| format!("reading {}", path.display()))?;
         let label = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -152,18 +139,16 @@ fn main() -> anyhow::Result<()> {
     } else if args.synthetic {
         let bytes = SyntheticTrack::demo().session_ibt(10, 1).to_bytes();
         let file = IbtFile::from_bytes(bytes)?;
-        Box::new(ReplaySource::new(file, "synthétique", args.speed, true))
+        Box::new(ReplaySource::new(file, "synthetic", args.speed, true))
     } else {
         if !cfg!(windows) {
-            bail!(
-                "la télémétrie live n'existe que sous Windows : utiliser --replay ou --synthetic"
-            );
+            bail!("live telemetry is only available on Windows: use --replay or --synthetic");
         }
         Box::new(LiveSource::new())
     };
 
-    // Référence et plan : ceux de la ligne de commande ; en mode synthétique,
-    // la référence et le plan de démonstration par défaut.
+    // Reference and plan: those from the command line; in synthetic mode,
+    // the demo reference and plan by default.
     let reference = match (&args.reference, args.synthetic) {
         (Some(p), _) => Some(ui::ReferenceSource::File(p.clone())),
         (None, true) => {
@@ -174,7 +159,7 @@ fn main() -> anyhow::Result<()> {
         (None, false) => None,
     };
     let plan = args.plan.clone().or_else(|| {
-        let demo = PathBuf::from("plans/synthetique.toml");
+        let demo = PathBuf::from("plans/synthetic.toml");
         (args.synthetic && demo.exists()).then_some(demo)
     });
     let no_voice = args.no_voice;
@@ -189,7 +174,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     ui::run(
-        "Coach simracing",
+        "Simracing coach",
         ui::StartOptions { reference, plan },
         move || {
             let hub = TelemetryHub::spawn(source, TelemetryHubConfig::default());
@@ -216,11 +201,11 @@ fn main() -> anyhow::Result<()> {
             input.set_ptt(settings.ptt.clone());
             let recorder: Option<std::sync::Arc<voice::Recorder>> = match voice::Recorder::open() {
                 Ok(r) => {
-                    tracing::info!("micro : {}", r.device());
+                    tracing::info!("microphone: {}", r.device());
                     Some(std::sync::Arc::new(r))
                 }
                 Err(e) => {
-                    tracing::warn!("{e} : push-to-talk indisponible");
+                    tracing::warn!("{e}: push-to-talk unavailable");
                     None
                 }
             };
@@ -262,13 +247,13 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Tour « pro » synthétique au rythme limite, au format CSV Garage61, sans
-/// YawRate ni LatAccel (estimés à l'import depuis la trajectoire).
+/// Synthetic "pro" lap at the limit, in Garage61 CSV format, without YawRate
+/// or LatAccel (estimated from the trajectory on import).
 fn synthetic_reference_csv() -> (String, String) {
     let samples = SyntheticTrack::demo().simulate_lap(1.0, 0.0, 0.0);
     let t = samples.len() as f64 / 60.0;
     let name = format!(
-        "Garage 61 - Pilote Pro - Voiture synthétique - Circuit synthétique - {:02}.{:02}.{:03} - demo.csv",
+        "Garage 61 - Pro Driver - Synthetic Car - Synthetic Track - {:02}.{:02}.{:03} - demo.csv",
         (t / 60.0) as u32,
         (t % 60.0) as u32,
         (t.fract() * 1000.0).round() as u32

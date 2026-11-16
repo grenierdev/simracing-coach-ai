@@ -1,6 +1,6 @@
 [package]
 name = "ui"
-description = "Interface GPUI du coach"
+description = "GPUI interface of the coach"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

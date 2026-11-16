@@ -1,6 +1,6 @@
-//! Boucle vocale complète sans matériel : appui sur le push-to-talk (source
-//! simulée), enregistrement (micro simulé), transcription, agent ACP en
-//! processus, réponse dite phrase par phrase via le moteur de consignes.
+//! Full voice loop without hardware: push-to-talk press (simulated source),
+//! recording (simulated microphone), transcription, in-process ACP agent,
+//! reply spoken sentence by sentence through the cue engine.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -45,10 +45,10 @@ impl Microphone for FakeMic {
 struct FixedStt;
 impl Stt for FixedStt {
     fn name(&self) -> String {
-        "fixe".into()
+        "fixed".into()
     }
     fn transcribe(&mut self, _: &Audio) -> Result<String, VoiceError> {
-        Ok("je n'ai plus de rotation au T5".into())
+        Ok("no rotation in T5".into())
     }
 }
 
@@ -99,7 +99,7 @@ fn mock_agent(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::C
                 }
                 let sid = req.session_id.clone();
                 tokio::spawn(async move {
-                    for part in ["Je regarde ", "le T5. Relâche le frein ", "plus tard."] {
+                    for part in ["Looking at ", "T5. Release the brake ", "later."] {
                         let u = SessionUpdate::AgentMessageChunk(ContentChunk::new(
                             ContentBlock::Text(TextContent::new(part)),
                         ));
@@ -187,7 +187,7 @@ fn push_to_talk_round_trip() {
                 }
             }
         }
-        panic!("attendu non reçu : {log:#?}");
+        panic!("expected event not received: {log:#?}");
     };
     wait(
         &|e| {
@@ -205,7 +205,7 @@ fn push_to_talk_round_trip() {
     keys.lock().unwrap().clear();
     wait(&|e| *e == ConvEvent::Recording(false), &mut log);
     wait(
-        &|e| matches!(e, ConvEvent::Pilot { voice: true, .. }),
+        &|e| matches!(e, ConvEvent::Driver { voice: true, .. }),
         &mut log,
     );
     wait(
@@ -216,11 +216,7 @@ fn push_to_talk_round_trip() {
     let p = prompts.lock().unwrap().clone();
     assert_eq!(p.len(), 1);
     assert!(p[0].starts_with("[Context] lap"), "{}", p[0]);
-    assert!(
-        p[0].ends_with("[Driver] je n'ai plus de rotation au T5"),
-        "{}",
-        p[0]
-    );
+    assert!(p[0].ends_with("[Driver] no rotation in T5"), "{}", p[0]);
 
     let lat = log
         .iter()
@@ -237,7 +233,7 @@ fn push_to_talk_round_trip() {
     );
     assert!(t <= w && w <= s, "{lat:?}");
 
-    // Les deux phrases passent par le moteur de consignes, dans l'ordre.
+    // Both sentences go through the cue engine, in order.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let said: Vec<String> = triggers
@@ -247,13 +243,10 @@ fn push_to_talk_round_trip() {
             .map(|e| e.text.clone())
             .collect();
         if said.len() >= 2 {
-            assert_eq!(
-                said,
-                vec!["Je regarde le T5.", "Relâche le frein plus tard."]
-            );
+            assert_eq!(said, vec!["Looking at T5.", "Release the brake later."]);
             break;
         }
-        assert!(Instant::now() < deadline, "phrases dites : {said:?}");
+        assert!(Instant::now() < deadline, "spoken sentences: {said:?}");
         std::thread::sleep(Duration::from_millis(100));
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-description = "Coach vocal de simracing pour iRacing"
+description = "Voice simracing coach for iRacing"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -8,8 +8,8 @@ rust-version.workspace = true
 
 [features]
 default = ["sherpa-static"]
-# Voix sherpa-onnx. `sherpa-shared` + SHERPA_ONNX_LIB_DIR : bibliothèque locale
-# (machines sans accès aux releases GitHub).
+# sherpa-onnx voice. `sherpa-shared` + SHERPA_ONNX_LIB_DIR: local library
+# (machines without access to GitHub releases).
 voice-sherpa = []
 sherpa-static = ["voice-sherpa", "voice/sherpa-static"]
 sherpa-shared = ["voice-sherpa", "voice/sherpa-shared"]

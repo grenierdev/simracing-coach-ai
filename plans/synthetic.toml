@@ -1,50 +1,50 @@
-# Plan de démonstration pour le circuit synthétique (simcoach --synthetic).
+# Demo plan for the synthetic track (simcoach --synthetic).
 #
-# Positions : par virage (ancre + décalage en mètres) ou absolues (LapDistPct).
-# Le coach se tait de 30 m avant chaque freinage de la référence jusqu'à l'apex,
-# et ne lance jamais une phrase qui n'aurait pas le temps d'être dite avant.
-# À 250 km/h, une phrase de 2,5 s couvre environ 175 m : on place les consignes
-# 250 à 300 m avant le freinage.
+# Positions: per corner (anchor + offset in metres) or absolute (LapDistPct).
+# The coach stays quiet from 30 m before each reference braking point until the
+# apex, and never starts a sentence that would not have time to be said before.
+# At 250 km/h, a 2.5 s sentence covers about 175 m: cues are placed 250 to
+# 300 m before the braking point.
 
-[reglages]
-marge_silence_m = 30
-silence_jusqu_a = "apex"
-retard_max_m = 150
+[settings]
+quiet_lead_m = 30
+quiet_until = "apex"
+max_delay_m = 150
 
-[[consigne]]
-id = "tour"
+[[trigger]]
+id = "lap"
 position = 0.005
-texte = "Nouveau tour, on attaque."
-repetition = "une_fois"
-priorite = 3
+text = "New lap, let's push."
+repeat = "once"
+priority = 3
 
-[[consigne]]
+[[trigger]]
 id = "t1"
-virage = "T1"
-decalage_m = -300
-texte = "Virage un, freine progressivement."
-priorite = 6
+corner = "T1"
+offset_m = -300
+text = "Turn one, brake progressively."
+priority = 6
 
-[[consigne]]
+[[trigger]]
 id = "t4"
-virage = "T4"
-decalage_m = -300
-texte = "Épingle, patiente avant les gaz."
-priorite = 7
+corner = "T4"
+offset_m = -300
+text = "Hairpin, be patient on the throttle."
+priority = 7
 
-[[consigne]]
+[[trigger]]
 id = "t5-delta"
-virage = "T5"
-ancre = "entree"
-decalage_m = -150
-texte = "Tu es en retard, garde de la vitesse dans la courbe rapide."
-condition = { delta_au_dessus = 0.3 }
-priorite = 5
+corner = "T5"
+anchor = "entry"
+offset_m = -150
+text = "You're behind, carry more speed through the fast corner."
+condition = { delta_above = 0.3 }
+priority = 5
 
-[[consigne]]
+[[trigger]]
 id = "t6"
-virage = "T6"
-decalage_m = -300
-texte = "Dernier virage, sortie large."
-repetition = { tours = 3 }
-priorite = 6
+corner = "T6"
+offset_m = -300
+text = "Last corner, wide exit."
+repeat = { laps = 3 }
+priority = 6

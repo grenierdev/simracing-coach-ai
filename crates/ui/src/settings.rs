@@ -1,5 +1,5 @@
-//! Réglages du pilote, enregistrés en TOML dans le dossier de configuration
-//! (`%APPDATA%\simcoach\config\settings.toml` sous Windows).
+//! Driver settings, saved as TOML in the configuration folder
+//! (`%APPDATA%\simcoach\config\settings.toml` on Windows).
 
 use std::path::PathBuf;
 
@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Bouton du push-to-talk.
+    /// Push-to-talk button.
     pub ptt: Option<Binding>,
-    /// Les réponses du coach sont dites à voix haute.
+    /// The coach's replies are spoken aloud.
     pub speak_replies: bool,
-    /// La session d'analyse prépare les consignes du tour suivant.
+    /// The analysis session prepares the cues for the next lap.
     pub auto_planning: bool,
 }
 
@@ -72,7 +72,7 @@ mod tests {
         assert_eq!(Settings::load_from(&path), Settings::default());
         let s = Settings {
             ptt: Some(Binding::Controller {
-                device: "Volant".into(),
+                device: "Wheel".into(),
                 instance: "{1234}".into(),
                 button: 7,
             }),

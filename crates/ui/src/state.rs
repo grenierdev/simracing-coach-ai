@@ -1,4 +1,4 @@
-//! État de la comparaison à la référence, indépendant de GPUI.
+//! State of the comparison to the reference, independent of GPUI.
 
 use std::sync::Arc;
 
@@ -26,15 +26,15 @@ impl ReferenceState {
 }
 
 impl ReferenceState {
-    /// Écart relatif entre la longueur de piste de la session et celle de la
-    /// référence : un écart notable signale une autre piste ou configuration.
+    /// Relative gap between the session track length and the reference one:
+    /// a notable gap signals another track or layout.
     pub fn length_mismatch(&self, session_length_m: Option<f64>) -> Option<String> {
         let s = session_length_m?;
         let r = self.analyzer.model.length_m;
         let rel = (s - r).abs() / s;
         (rel > 0.03).then(|| {
             format!(
-                "Longueur de piste différente : session {:.2} km, référence {:.2} km",
+                "Track length differs: session {:.2} km, reference {:.2} km",
                 s / 1000.0,
                 r / 1000.0
             )
@@ -42,8 +42,8 @@ impl ReferenceState {
     }
 }
 
-/// Comparaisons du dernier tour complet et du meilleur tour, recalculées
-/// seulement quand ces tours changent.
+/// Comparisons of the last complete lap and of the best lap, recomputed only
+/// when those laps change.
 #[derive(Default)]
 pub struct Comparisons {
     pub last: Option<Arc<LapComparison>>,
@@ -116,7 +116,7 @@ mod tests {
         let mut c = Comparisons::default();
         c.update(&snap, &analyzer);
         let best = c.best.clone().unwrap();
-        // Le meilleur tour du fichier est la référence : delta nul.
+        // The best lap of the file is the reference: zero delta.
         assert!(best.total_delta().abs() < 1e-9);
         assert!(c.last.is_some());
         let before = Arc::as_ptr(&best);
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(
             Arc::as_ptr(c.best.as_ref().unwrap()),
             before,
-            "pas de recalcul"
+            "no recomputation"
         );
 
         let state = ReferenceState {

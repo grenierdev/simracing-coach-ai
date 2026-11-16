@@ -1,5 +1,5 @@
-//! Planification de bout en bout : tour terminé → session d'analyse (faux
-//! agent) → vrai appel MCP `update_plan` → consigne dans la couche du coach.
+//! End-to-end planning: lap completed → analysis session (fake agent) → real
+//! MCP `update_plan` call → trigger in the coach layer.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -87,7 +87,7 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
                     let token = h.headers[0].value.trim_start_matches("Bearer ").to_string();
                     *mcp2.lock().unwrap() = Some((h.url.clone(), token));
                 }
-                r.respond(NewSessionResponse::new("analyse"))
+                r.respond(NewSessionResponse::new("analysis"))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -107,7 +107,7 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
                         "mode": "replace",
                         "triggers": [{
                             "id": "auto-T6", "corner": "T6", "anchor": "braking", "offset_m": -300,
-                            "text": "Dernier virage, freine plus tard.", "priority": 6, "expire_after_laps": 2
+                            "text": "Last corner, brake later.", "priority": 6, "expire_after_laps": 2
                         }]
                     });
                     let res = client
@@ -117,7 +117,7 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
                     assert_ne!(res.is_error, Some(true));
                     let _ = client.cancel().await;
                     let u = SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
-                        "Analyse faite.\nT6 : freinage trop tôt, consigne ajoutée.",
+                        "Analysis done.\nT6: braking too early, trigger added.",
                     ))));
                     let _ = cx.send_notification(SessionNotification::new(sid, u));
                     let _ = r.respond(PromptResponse::new(StopReason::EndTurn));
@@ -146,8 +146,8 @@ fn completed_lap_triggers_analysis_and_coach_plan() {
     let triggers = Arc::new(TriggerRuntime::spawn(srx, Box::new(Mute)));
     triggers.set_reference(Some(analyzer));
     triggers.set_plan(
-        "pilote",
-        Plan::parse("[[trigger]]\nid = \"a\"\nposition = 0.1\ntext = \"Pilote.\"").unwrap(),
+        "driver",
+        Plan::parse("[[trigger]]\nid = \"a\"\nposition = 0.1\ntext = \"Driver.\"").unwrap(),
     );
 
     let done = lap(track.simulate_lap(0.95, 100.0, 0.0), 3);
@@ -164,7 +164,7 @@ fn completed_lap_triggers_analysis_and_coach_plan() {
 
     let prompts: Arc<Mutex<Vec<String>>> = Arc::default();
     let cfg = AgentConfig {
-        label: "analyse".into(),
+        label: "analysis".into(),
         command: vec![],
         model: Some("sonnet".into()),
         disable_thinking: false,
@@ -199,7 +199,7 @@ fn completed_lap_triggers_analysis_and_coach_plan() {
     while planner.status().analyses == 0 {
         assert!(
             Instant::now() < deadline,
-            "analyse non terminée : {:?}",
+            "analysis not finished: {:?}",
             planner.status()
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -207,11 +207,11 @@ fn completed_lap_triggers_analysis_and_coach_plan() {
     let st = planner.status();
     let (lap_no, summary, _) = st.last.unwrap();
     assert_eq!(lap_no, 3);
-    assert_eq!(summary, "T6 : freinage trop tôt, consigne ajoutée.");
+    assert_eq!(summary, "T6: braking too early, trigger added.");
 
     let p = prompts.lock().unwrap()[0].clone();
     assert!(p.starts_with("[Analysis] Lap 3 completed in"), "{p}");
-    assert!(p.contains("time_lost_by_corner"), "vue d'ensemble jointe");
+    assert!(p.contains("time_lost_by_corner"), "overview attached");
 
     std::thread::sleep(Duration::from_millis(300));
     let ids: Vec<String> = triggers
@@ -224,6 +224,6 @@ fn completed_lap_triggers_analysis_and_coach_plan() {
     assert_eq!(
         triggers.current_plan().unwrap().1.triggers.len(),
         1,
-        "plan du pilote intact"
+        "driver plan untouched"
     );
 }

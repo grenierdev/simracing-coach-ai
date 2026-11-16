@@ -1,4 +1,4 @@
-//! Mise en place de Claude : serveur MCP embarqué et session ACP de conversation.
+//! Claude setup: embedded MCP server and ACP conversation session.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -10,12 +10,12 @@ use mcp::{CoachData, McpServerHandle, ToolCallLog};
 use telemetry::{LiveSnapshot, SnapshotHandle};
 use triggers::{Plan, SayWhen, TriggerRuntime};
 
-/// Journal des appels d'outils, partagé avec l'interface.
+/// Tool call log, shared with the UI.
 pub type ToolLog = Arc<Mutex<VecDeque<ToolCallLog>>>;
 
-/// État du programme vu par le serveur MCP.
+/// Program state as seen by the MCP server.
 pub struct AppData {
-    /// Session servie par ce point d'accès MCP (journal des outils).
+    /// Session served by this MCP endpoint (tool log).
     pub source: &'static str,
     pub snapshot: SnapshotHandle,
     pub triggers: Arc<TriggerRuntime>,
@@ -52,34 +52,34 @@ impl CoachData for AppData {
     }
 }
 
-/// Options de la session de conversation.
+/// Conversation session options.
 pub struct AgentOptions {
     pub enabled: bool,
     pub model: String,
-    /// Session d'analyse (planification du tour suivant).
+    /// Analysis session (planning of the next lap).
     pub analysis: bool,
     pub analysis_model: String,
 }
 
-/// Résultat du démarrage : ce que l'interface affiche et pilote.
+/// Startup result: what the UI displays and drives.
 pub struct AgentServices {
     pub agent: Option<Arc<CoachAgent>>,
     pub analysis: Option<Arc<CoachAgent>>,
     pub mcp_url: Option<String>,
     pub mcp_error: Option<String>,
     pub tool_log: ToolLog,
-    /// Garde le runtime et le serveur en vie.
+    /// Keeps the runtime and the server alive.
     pub keep_alive: Box<dyn std::any::Any>,
 }
 
-/// Dossier de la session : contient le `CLAUDE.md` du coach, modifiable par le pilote.
+/// Session folder: holds the coach's `CLAUDE.md`, editable by the driver.
 fn session_dir(role: &str) -> PathBuf {
     directories::ProjectDirs::from("", "", "simcoach")
         .map(|p| p.data_local_dir().join("sessions").join(role))
         .unwrap_or_else(|| PathBuf::from("sessions").join(role))
 }
 
-/// Lit le prompt du coach ; écrit la version par défaut s'il n'existe pas.
+/// Reads the coach prompt; writes the default version if it does not exist.
 fn system_prompt(dir: &std::path::Path, default: &str) -> String {
     let path = dir.join("CLAUDE.md");
     if let Ok(text) = std::fs::read_to_string(&path) {
@@ -109,13 +109,13 @@ pub fn start(
                 agent: None,
                 analysis: None,
                 mcp_url: None,
-                mcp_error: Some(format!("runtime : {e}")),
+                mcp_error: Some(format!("runtime: {e}")),
                 tool_log,
                 keep_alive: Box::new(()),
             };
         }
     };
-    // Un point d'accès MCP par session, pour savoir qui appelle quel outil.
+    // One MCP endpoint per session, to know who calls which tool.
     let data = |source: &'static str| {
         Arc::new(AppData {
             source,
@@ -125,7 +125,7 @@ pub fn start(
         })
     };
     let analysis_server = (options.enabled && options.analysis)
-        .then(|| rt.block_on(McpServerHandle::start(data("analyse"))).ok())
+        .then(|| rt.block_on(McpServerHandle::start(data("analysis"))).ok())
         .flatten();
     let server = match rt.block_on(McpServerHandle::start(data("conversation"))) {
         Ok(s) => s,
@@ -140,7 +140,7 @@ pub fn start(
             };
         }
     };
-    tracing::info!("serveur MCP : {}", server.url);
+    tracing::info!("MCP server: {}", server.url);
     let endpoint = McpEndpoint {
         name: mcp::SERVER_NAME.into(),
         url: server.url.clone(),
@@ -158,14 +158,14 @@ pub fn start(
             cwd,
             mcp: Some(endpoint.clone()),
         };
-        tracing::info!("adaptateur ACP : {}", cfg.command.join(" "));
+        tracing::info!("ACP adapter: {}", cfg.command.join(" "));
         Arc::new(CoachAgent::spawn(cfg, rt.handle()))
     });
-    // Session d'analyse : modèle plus fort, réflexion permise (hors boucle rapide).
+    // Analysis session: stronger model, thinking allowed (outside the fast loop).
     let analysis = analysis_server.as_ref().map(|srv| {
-        let cwd = session_dir("analyse");
+        let cwd = session_dir("analysis");
         let cfg = AgentConfig {
-            label: "analyse".into(),
+            label: "analysis".into(),
             command: AgentConfig::default_command(),
             model: Some(options.analysis_model.clone()),
             disable_thinking: false,

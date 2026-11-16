@@ -1,8 +1,8 @@
-//! Interface GPUI du coach : état des connexions, session, référence, valeurs
-//! live, tours enregistrés, virages et deltas face à la référence.
+//! GPUI interface of the coach: connection status, session, reference, live
+//! values, recorded laps, corners and deltas to the reference.
 //!
-//! L'interface ne fait que lire l'instantané publié par le hub de télémétrie,
-//! à ~30 Hz ; elle ne bloque jamais la boucle rapide.
+//! The UI only reads the snapshot published by the telemetry hub, at ~30 Hz;
+//! it never blocks the fast loop.
 
 pub mod chat;
 pub mod conversation;
@@ -54,26 +54,26 @@ mod theme {
     pub const BEST: u32 = 0xbc8cff;
 }
 
-/// Services démarrés par l'application et pilotés par l'interface.
+/// Services started by the application and driven by the UI.
 pub struct Services {
     pub hub: TelemetryHub,
     pub triggers: Arc<TriggerRuntime>,
     pub speaker: Arc<Speaker>,
-    /// Session de conversation avec Claude (absente avec `--no-agent`).
+    /// Conversation session with Claude (absent with `--no-agent`).
     pub agent: Option<Arc<CoachAgent>>,
     pub mcp_url: Option<String>,
     pub mcp_error: Option<String>,
     pub tool_log: Arc<Mutex<VecDeque<ToolCallLog>>>,
-    /// Garde en vie le runtime asynchrone et le serveur MCP.
+    /// Keeps the async runtime and the MCP server alive.
     pub keep_alive: Box<dyn std::any::Any>,
-    /// Boucle de conversation (push-to-talk, STT, réponses dites).
+    /// Conversation loop (push-to-talk, STT, spoken replies).
     pub conversation: Conversation,
     pub input: Option<Arc<InputService>>,
     pub listener: Option<Arc<Listener>>,
     pub recorder: Option<Arc<Recorder>>,
     pub mic_name: Option<String>,
     pub settings: Settings,
-    /// Planification automatique du tour suivant (absente avec `--no-planning`).
+    /// Automatic planning of the next lap (absent with `--no-planning`).
     pub planner: Option<Planner>,
 }
 
@@ -88,7 +88,7 @@ pub struct StartOptions {
     pub plan: Option<PathBuf>,
 }
 
-/// Lance l'application. `make_services` est appelé une fois l'interface prête.
+/// Starts the application. `make_services` is called once the UI is ready.
 pub fn run(title: &str, options: StartOptions, make_services: impl FnOnce() -> Services + 'static) {
     let title: SharedString = title.to_string().into();
     gpui_platform::application().run(move |cx: &mut App| {
@@ -105,7 +105,7 @@ pub fn run(title: &str, options: StartOptions, make_services: impl FnOnce() -> S
             },
             |_, cx| cx.new(|cx| CoachView::new(services, options, cx)),
         )
-        .expect("ouverture de la fenêtre");
+        .expect("opening the window");
         cx.activate(true);
     });
 }
@@ -192,8 +192,7 @@ impl CoachView {
                                 i.set_ptt(Some(b));
                             }
                             if let Err(e) = view.settings.save() {
-                                view.chat
-                                    .system_message(format!("Réglages non enregistrés : {e}"));
+                                view.chat.system_message(format!("Settings not saved: {e}"));
                             }
                         }
                     }
@@ -260,7 +259,7 @@ impl CoachView {
         }
         if self.agent.is_none() {
             self.chat
-                .system_message("Aucun agent : lancer sans --no-agent.");
+                .system_message("No agent: start without --no-agent.");
             return;
         }
         self.conversation.send_text(text);
@@ -270,14 +269,14 @@ impl CoachView {
     fn apply_conversation(&mut self, e: ConvEvent) {
         match e {
             ConvEvent::Agent(e) => self.chat.apply(e),
-            ConvEvent::Pilot { turn, text, voice } => {
-                self.chat.pilot_message(&text, turn);
+            ConvEvent::Driver { turn, text, voice } => {
+                self.chat.driver_message(&text, turn);
                 if voice {
                     self.voice_latency = None;
                 }
             }
             ConvEvent::Recording(r) => self.recording = r,
-            ConvEvent::NotUnderstood => self.chat.system_message("Rien compris, répète."),
+            ConvEvent::NotUnderstood => self.chat.system_message("Didn't catch that, say again."),
             ConvEvent::Latency(l) => self.voice_latency = Some(l),
         }
     }
@@ -339,7 +338,7 @@ impl CoachView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Plan de consignes (.toml)".into()),
+            prompt: Some("Cue plan (.toml)".into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await
@@ -361,7 +360,7 @@ impl CoachView {
                 self.coach.set_plan(name.clone(), plan);
                 PlanStatus::Loaded(name)
             }
-            Err(e) => PlanStatus::Failed(format!("{name} : {e}")),
+            Err(e) => PlanStatus::Failed(format!("{name}: {e}")),
         };
         cx.notify();
     }
@@ -371,7 +370,7 @@ impl CoachView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Tour de référence (.csv Garage61 ou .ibt)".into()),
+            prompt: Some("Reference lap (Garage61 .csv or .ibt)".into()),
         });
         cx.spawn(async move |this, cx| match rx.await {
             Ok(Ok(Some(paths))) => {
@@ -381,7 +380,7 @@ impl CoachView {
             }
             Ok(Err(e)) => {
                 let _ = this.update(cx, |view, cx| {
-                    view.reference = ReferenceStatus::Failed(format!("sélecteur de fichier : {e}"));
+                    view.reference = ReferenceStatus::Failed(format!("file picker: {e}"));
                     cx.notify();
                 });
             }
@@ -507,7 +506,7 @@ fn bar(label: &'static str, value: f32, fill: u32) -> gpui::Div {
             div()
                 .w(px(40.))
                 .text_xs()
-                .child(format!("{:.0} %", v * 100.0)),
+                .child(format!("{:.0}%", v * 100.0)),
         )
 }
 
@@ -542,26 +541,26 @@ impl CoachView {
     fn render_status(&self) -> gpui::Div {
         let s = &self.snap;
         let (c, detail): (u32, SharedString) = match &s.state {
-            ConnectionState::Waiting => (theme::WARN, "en attente".into()),
+            ConnectionState::Waiting => (theme::WARN, "waiting".into()),
             ConnectionState::Connected => (
                 theme::OK,
                 format!("{} · {:.0} Hz", s.source, s.sample_rate_hz).into(),
             ),
-            ConnectionState::Ended => (theme::IDLE, "rejeu terminé".into()),
+            ConnectionState::Ended => (theme::IDLE, "replay ended".into()),
             ConnectionState::Error(e) => (theme::ERR, e.clone().into()),
         };
         div()
             .flex()
             .flex_wrap()
             .gap_2()
-            .child(status_pill("Télémétrie", c, detail))
+            .child(status_pill("Telemetry", c, detail))
             .child(self.render_stt_pill())
             .child(self.render_tts_pill())
             .child(self.render_agent_pill())
             .child(match (&self.mcp_url, &self.mcp_error) {
-                (Some(url), _) => status_pill("Serveur MCP", theme::OK, url.clone()),
-                (None, Some(e)) => status_pill("Serveur MCP", theme::ERR, e.clone()),
-                (None, None) => status_pill("Serveur MCP", theme::IDLE, "arrêté"),
+                (Some(url), _) => status_pill("MCP server", theme::OK, url.clone()),
+                (None, Some(e)) => status_pill("MCP server", theme::ERR, e.clone()),
+                (None, None) => status_pill("MCP server", theme::IDLE, "stopped"),
             })
     }
 
@@ -572,20 +571,17 @@ impl CoachView {
                 .as_ref()
                 .map(|r| (r.level() * 100.0).min(100.0))
                 .unwrap_or(0.0);
-            return status_pill("STT", theme::ERR, format!("● enregistrement {level:.0} %"));
+            return status_pill("STT", theme::ERR, format!("● recording {level:.0}%"));
         }
         let Some(l) = &self.listener else {
-            return status_pill("STT", theme::IDLE, "désactivé");
+            return status_pill("STT", theme::IDLE, "disabled");
         };
         let st = l.status();
         let (c, detail) = match &st.state {
-            SpeakerState::Loading => (
-                theme::WARN,
-                st.detail.unwrap_or_else(|| "chargement".into()),
-            ),
+            SpeakerState::Loading => (theme::WARN, st.detail.unwrap_or_else(|| "loading".into())),
             SpeakerState::Ready => match (&self.settings.ptt, &self.recorder) {
-                (_, None) => (theme::WARN, "aucun micro".into()),
-                (None, _) => (theme::WARN, "bouton de push-to-talk à régler".into()),
+                (_, None) => (theme::WARN, "no microphone".into()),
+                (None, _) => (theme::WARN, "push-to-talk button not set".into()),
                 (Some(b), Some(_)) => (theme::OK, b.label()),
             },
             SpeakerState::Error(e) => (theme::ERR, e.clone()),
@@ -596,13 +592,13 @@ impl CoachView {
     fn render_voice_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
         let capturing = self.capture.is_some();
         let ptt = if capturing {
-            "Appuie sur une touche ou un bouton… (Échap pour annuler)".to_string()
+            "Press a key or a button… (Esc to cancel)".to_string()
         } else {
             self.settings
                 .ptt
                 .as_ref()
                 .map(|b| b.label())
-                .unwrap_or_else(|| "aucun bouton".into())
+                .unwrap_or_else(|| "no button".into())
         };
         let button = |id: &'static str, label: String| {
             div()
@@ -622,7 +618,7 @@ impl CoachView {
                     .unwrap_or_else(|| "…".into())
             };
             format!(
-                "Fin de parole → texte {} → premier mot {} → premier son {}",
+                "End of speech → text {} → first word {} → first sound {}",
                 f(l.transcript_ms),
                 f(l.first_word_ms),
                 f(l.first_sound_ms)
@@ -644,7 +640,7 @@ impl CoachView {
                         div()
                             .flex_none()
                             .text_color(color(theme::MUTED))
-                            .child("Parler :"),
+                            .child("Talk:"),
                     )
                     .child(
                         div()
@@ -663,9 +659,9 @@ impl CoachView {
                         button(
                             "ptt-bind",
                             if capturing {
-                                "Annuler".into()
+                                "Cancel".into()
                             } else {
-                                "Modifier…".into()
+                                "Change…".into()
                             },
                         )
                         .on_click(cx.listener(|view, _, _, cx| {
@@ -683,9 +679,9 @@ impl CoachView {
                         button(
                             "speak-replies",
                             if self.settings.speak_replies {
-                                "Réponses dites : oui".into()
+                                "Spoken replies: on".into()
                             } else {
-                                "Réponses dites : non".into()
+                                "Spoken replies: off".into()
                             },
                         )
                         .on_click(cx.listener(|view, _, _, cx| {
@@ -701,7 +697,7 @@ impl CoachView {
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(format!("Micro : {m}"))
+                    .child(format!("Microphone: {m}"))
             }))
             .children(latency.map(|l| div().text_xs().text_color(color(theme::MUTED)).child(l)))
     }
@@ -711,27 +707,27 @@ impl CoachView {
             .chat
             .last_latency
             .and_then(|l| l.first_chunk_ms)
-            .map(|ms| format!(" · premier mot {:.2} s", ms / 1000.0))
+            .map(|ms| format!(" · first word {:.2} s", ms / 1000.0))
             .unwrap_or_default();
         let (c, detail): (u32, String) = match (&self.agent, &self.chat.status) {
-            (None, _) => (theme::IDLE, "désactivé".into()),
-            (Some(_), None | Some(AgentStatus::Starting)) => (theme::WARN, "démarrage".into()),
+            (None, _) => (theme::IDLE, "disabled".into()),
+            (Some(_), None | Some(AgentStatus::Starting)) => (theme::WARN, "starting".into()),
             (Some(a), Some(AgentStatus::Ready { .. })) => {
                 (theme::OK, format!("{}{latency}", a.label()))
             }
-            (Some(_), Some(AgentStatus::Busy)) => (theme::WARN, format!("réfléchit{latency}")),
+            (Some(_), Some(AgentStatus::Busy)) => (theme::WARN, format!("thinking{latency}")),
             (Some(_), Some(AgentStatus::Failed(e))) => (theme::ERR, e.clone()),
-            (Some(_), Some(AgentStatus::Stopped)) => (theme::IDLE, "arrêté".into()),
+            (Some(_), Some(AgentStatus::Stopped)) => (theme::IDLE, "stopped".into()),
         };
-        status_pill("Agent ACP", c, detail)
+        status_pill("ACP agent", c, detail)
     }
 
     fn render_chat(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entries = self.chat.entries.iter().rev().take(40).rev().map(|e| {
             let (who, tone) = match e.who {
-                Who::Driver => ("Pilote", theme::BEST),
+                Who::Driver => ("Driver", theme::BEST),
                 Who::Coach => ("Coach", theme::TEXT),
-                Who::Tool => ("outil", theme::MUTED),
+                Who::Tool => ("tool", theme::MUTED),
                 Who::System => ("", theme::WARN),
             };
             let small = matches!(e.who, Who::Tool | Who::System);
@@ -760,7 +756,7 @@ impl CoachView {
         let focused = self.input_focus.is_focused(window);
         let placeholder = self.chat.input.is_empty();
         let input_text = if placeholder {
-            "Écrire au coach… (Entrée : envoyer, Échap : interrompre)".to_string()
+            "Message the coach… (Enter: send, Esc: interrupt)".to_string()
         } else if focused {
             format!("{}▏", self.chat.input)
         } else {
@@ -816,7 +812,7 @@ impl CoachView {
         let (c, detail): (u32, String) = match &st.state {
             SpeakerState::Loading => (
                 theme::WARN,
-                st.detail.clone().unwrap_or_else(|| "chargement".into()),
+                st.detail.clone().unwrap_or_else(|| "loading".into()),
             ),
             SpeakerState::Ready => {
                 let mut d = st.engine.clone();
@@ -854,7 +850,7 @@ impl CoachView {
                 div()
                     .text_xs()
                     .text_color(color(theme::MUTED))
-                    .child(format!("Source : {}", s.source)),
+                    .child(format!("Source: {}", s.source)),
             )
             .child(self.render_reference(cx))
             .child(self.render_plan_line(cx))
@@ -862,7 +858,7 @@ impl CoachView {
 
     fn render_plan_line(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (line, tone) = match (&self.plan, &self.coach_status.plan_error) {
-            (PlanStatus::None, _) => ("Aucun plan de consignes".to_string(), theme::MUTED),
+            (PlanStatus::None, _) => ("No cue plan".to_string(), theme::MUTED),
             (PlanStatus::Failed(e), _) => (e.clone(), theme::ERR),
             (PlanStatus::Loaded(_), Some(e)) => (e.clone(), theme::ERR),
             (PlanStatus::Loaded(n), None) => (
@@ -875,12 +871,12 @@ impl CoachView {
                         .count();
                     let own = self.coach_status.triggers.len() - coach;
                     let coach = if coach > 0 {
-                        format!(" + {coach} du coach")
+                        format!(" + {coach} from the coach")
                     } else {
                         String::new()
                     };
                     format!(
-                        "{n} · {own} consignes{coach} · {} zones de silence",
+                        "{n} · {own} cues{coach} · {} quiet zones",
                         self.coach_status.quiet_zones
                     )
                 },
@@ -895,7 +891,7 @@ impl CoachView {
             .bg(color(theme::BORDER))
             .text_xs()
             .cursor_pointer()
-            .child("Choisir…")
+            .child("Choose…")
             .on_click(cx.listener(|view, _, _, cx| view.pick_plan(cx)));
         div()
             .flex()
@@ -924,25 +920,19 @@ impl CoachView {
         let p = self.planner.as_ref()?;
         let st = p.status();
         let (line, tone) = if !st.enabled {
-            (
-                "Planification automatique désactivée".to_string(),
-                theme::MUTED,
-            )
+            ("Automatic planning disabled".to_string(), theme::MUTED)
         } else if let Some(lap) = st.running {
-            (
-                format!("Analyse du tour {lap} en cours ({})…", st.model),
-                theme::WARN,
-            )
+            (format!("Analyzing lap {lap} ({})…", st.model), theme::WARN)
         } else if let Some(e) = &st.error {
-            (format!("Analyse : {e}"), theme::ERR)
+            (format!("Analysis: {e}"), theme::ERR)
         } else if let Some((lap, summary, secs)) = &st.last {
             (
-                format!("Tour {lap} analysé en {secs:.0} s : {summary}"),
+                format!("Lap {lap} analyzed in {secs:.0} s: {summary}"),
                 theme::TEXT,
             )
         } else {
             (
-                format!("Analyse ({}) après le prochain tour valide", st.model),
+                format!("Analysis ({}) after the next valid lap", st.model),
                 theme::MUTED,
             )
         };
@@ -955,11 +945,7 @@ impl CoachView {
             .bg(color(theme::BORDER))
             .text_xs()
             .cursor_pointer()
-            .child(if st.enabled {
-                "Auto : oui"
-            } else {
-                "Auto : non"
-            })
+            .child(if st.enabled { "Auto: on" } else { "Auto: off" })
             .on_click(cx.listener(|view, _, _, cx| {
                 view.toggle_auto_planning();
                 cx.notify();
@@ -988,24 +974,24 @@ impl CoachView {
         let st = &self.coach_status;
         let rows = st.triggers.iter().map(|v| {
             let (state, tone) = match v.state {
-                TriggerState::Waiting => ("en attente".to_string(), theme::MUTED),
-                TriggerState::Queued => ("en file".to_string(), theme::WARN),
+                TriggerState::Waiting => ("waiting".to_string(), theme::MUTED),
+                TriggerState::Queued => ("queued".to_string(), theme::WARN),
                 TriggerState::Spoken => (
                     format!(
-                        "dite ×{} (tour {})",
+                        "spoken ×{} (lap {})",
                         v.times_spoken,
                         v.last_spoken_lap.unwrap_or(0)
                     ),
                     theme::OK,
                 ),
-                TriggerState::Expired => (format!("terminée ×{}", v.times_spoken), theme::IDLE),
+                TriggerState::Expired => (format!("done ×{}", v.times_spoken), theme::IDLE),
             };
             let coach = v.trigger.id.starts_with(triggers::COACH_PREFIX);
             let place = v
                 .trigger
                 .corner
                 .clone()
-                .unwrap_or_else(|| format!("{:.1} %", v.trigger.at_pct * 100.0));
+                .unwrap_or_else(|| format!("{:.1}%", v.trigger.at_pct * 100.0));
             let place = if coach { format!("{place} ·C") } else { place };
             div()
                 .flex()
@@ -1039,7 +1025,7 @@ impl CoachView {
                         .w(px(96.))
                         .whitespace_nowrap()
                         .text_color(color(theme::MUTED))
-                        .child(format!("Tour {} · {:.0} %", e.lap, e.pct * 100.0)),
+                        .child(format!("Lap {} · {:.0}%", e.lap, e.pct * 100.0)),
                 )
                 .child(
                     div()
@@ -1047,17 +1033,17 @@ impl CoachView {
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .text_ellipsis()
-                        .child(format!("Coach : {}", e.text)),
+                        .child(format!("Coach: {}", e.text)),
                 )
         });
         let quiet = st.quiet_now.then(|| {
             div()
                 .text_xs()
                 .text_color(color(theme::WARN))
-                .child("silence : zone de freinage")
+                .child("quiet: braking zone")
         });
         let planner = self.render_planner(cx);
-        panel("Consignes")
+        panel("Cues")
             .flex_1()
             .min_w_0()
             .children(planner)
@@ -1079,7 +1065,7 @@ impl CoachView {
                     .border_color(color(theme::BORDER))
                     .text_xs()
                     .text_color(color(theme::MUTED))
-                    .child("JOURNAL"),
+                    .child("LOG"),
             )
             .children(log)
     }
@@ -1087,15 +1073,13 @@ impl CoachView {
     fn render_reference(&self, cx: &mut Context<Self>) -> gpui::Div {
         let session_length = self.snap.session.as_ref().and_then(|i| i.track_length_m);
         let (line, detail, tone): (String, Option<String>, u32) = match &self.reference {
-            ReferenceStatus::None => ("Aucune référence".into(), None, theme::MUTED),
-            ReferenceStatus::Loading(n) => (format!("Chargement de {n}…"), None, theme::WARN),
-            ReferenceStatus::Failed(e) => {
-                ("Échec du chargement".into(), Some(e.clone()), theme::ERR)
-            }
+            ReferenceStatus::None => ("No reference".into(), None, theme::MUTED),
+            ReferenceStatus::Loading(n) => (format!("Loading {n}…"), None, theme::WARN),
+            ReferenceStatus::Failed(e) => ("Loading failed".into(), Some(e.clone()), theme::ERR),
             ReferenceStatus::Ready(r) => {
                 let rot = r.reference.rotation;
                 let mut detail = format!(
-                    "{} virages · rotation : {}",
+                    "{} corners · rotation: {}",
                     r.analyzer.model.corners.len(),
                     rot.yaw_rate.label()
                 );
@@ -1117,7 +1101,7 @@ impl CoachView {
             .bg(color(theme::BORDER))
             .text_xs()
             .cursor_pointer()
-            .child("Choisir…")
+            .child("Choose…")
             .on_click(cx.listener(|view, _, _, cx| view.pick_reference(cx)));
         div()
             .flex()
@@ -1135,7 +1119,7 @@ impl CoachView {
                         div()
                             .text_xs()
                             .text_color(color(theme::MUTED))
-                            .child("RÉFÉRENCE"),
+                            .child("REFERENCE"),
                     )
                     .child(button),
             )
@@ -1153,7 +1137,7 @@ impl CoachView {
             "–".into()
         };
         let pct = if has {
-            format!("{:.1} %", smp.lap_dist_pct * 100.0)
+            format!("{:.1}%", smp.lap_dist_pct * 100.0)
         } else {
             "–".into()
         };
@@ -1174,7 +1158,7 @@ impl CoachView {
                 div()
                     .text_xs()
                     .text_color(color(theme::MUTED))
-                    .child("Δ réf"),
+                    .child("Δ ref"),
             )
             .child(
                 div()
@@ -1186,19 +1170,19 @@ impl CoachView {
                         None => "–".into(),
                     }),
             );
-        panel("En piste")
+        panel("On track")
             .child(
                 div()
                     .flex()
                     .gap_6()
-                    .child(big_value("Tour", lap))
-                    .child(big_value("Chrono", elapsed))
+                    .child(big_value("Lap", lap))
+                    .child(big_value("Time", elapsed))
                     .child(delta_box)
                     .child(big_value("Position", pct))
                     .child(big_value("km/h", format::kmh(smp.speed)))
-                    .child(big_value("Rapport", format::gear(smp.gear)))
+                    .child(big_value("Gear", format::gear(smp.gear)))
                     .child(big_value(
-                        "tr/min",
+                        "rpm",
                         if smp.rpm.is_finite() {
                             format!("{:.0}", smp.rpm)
                         } else {
@@ -1206,8 +1190,8 @@ impl CoachView {
                         },
                     )),
             )
-            .child(bar("Gaz", smp.throttle, theme::THROTTLE))
-            .child(bar("Frein", smp.brake, theme::BRAKE))
+            .child(bar("Throttle", smp.throttle, theme::THROTTLE))
+            .child(bar("Brake", smp.brake, theme::BRAKE))
     }
 
     fn render_laps(&self) -> impl IntoElement {
@@ -1215,11 +1199,11 @@ impl CoachView {
         let best = s.best_lap.as_ref().map(|l| l.lap_time);
         let header = row(
             vec![
-                (50., "Tour".into()),
-                (90., "Temps".into()),
-                (70., "Écart".into()),
-                (70., "Δ réf".into()),
-                (80., "État".into()),
+                (50., "Lap".into()),
+                (90., "Time".into()),
+                (70., "Gap".into()),
+                (70., "Δ ref".into()),
+                (80., "Status".into()),
             ],
             theme::MUTED,
         );
@@ -1253,7 +1237,7 @@ impl CoachView {
                 },
             )
         });
-        panel("Tours")
+        panel("Laps")
             .flex_1()
             .min_h_0()
             .overflow_hidden()
@@ -1283,16 +1267,16 @@ impl CoachView {
         let best = self.comparisons.best.as_ref();
         let header = row(
             vec![
-                (50., "Virage".into()),
-                (68., "Δ dernier".into()),
-                (72., "Δ meilleur".into()),
-                (90., "V mini / réf".into()),
-                (56., "Frein".into()),
-                (56., "Gaz".into()),
+                (50., "Corner".into()),
+                (68., "Δ last".into()),
+                (72., "Δ best".into()),
+                (90., "Min V / ref".into()),
+                (56., "Brake".into()),
+                (64., "Throttle".into()),
                 (56., "Trail".into()),
-                (88., "Rotation E/S".into()),
-                (72., "Roue libre".into()),
-                (120., "Consigne".into()),
+                (88., "Rot. in/out".into()),
+                (72., "Coasting".into()),
+                (120., "Cue".into()),
             ],
             theme::MUTED,
         );
@@ -1346,7 +1330,7 @@ impl CoachView {
                     theme::TEXT,
                 ))
                 .child(cell(
-                    56.,
+                    64.,
                     format::meters(lc.and_then(|c| c.throttle_on_delta_m)),
                     theme::TEXT,
                 ))
@@ -1391,21 +1375,21 @@ impl CoachView {
                     .first()
                     .map(|c| {
                         format!(
-                            " · plus coûteux : {} ({})",
+                            " · costliest: {} ({})",
                             c.label(),
                             format::delta(c.time_delta)
                         )
                     })
                     .unwrap_or_default();
                 format!(
-                    "Dernier tour {} : {}{worst}",
+                    "Last lap {}: {}{worst}",
                     l.lap_number,
                     format::delta(l.total_delta())
                 )
             }
-            (None, _) => "Comparaison après le premier tour complet.".into(),
+            (None, _) => "Comparison after the first complete lap.".into(),
         };
-        panel("Virages vs référence")
+        panel("Corners vs reference")
             .flex_1()
             .min_h_0()
             .overflow_hidden()
@@ -1425,7 +1409,7 @@ impl CoachView {
                 div()
                     .text_xs()
                     .text_color(color(theme::MUTED))
-                    .child("Frein/Gaz : + plus tard que la référence. Rotation : < 1 moins de rotation pour le même braquage."),
+                    .child("Brake/Throttle: + later than the reference. Rotation: < 1 less rotation for the same steering."),
             )
     }
 
@@ -1434,11 +1418,11 @@ impl CoachView {
         let current = s.sample.map(|x| x.lap_dist_pct as f64);
         let header = row(
             vec![
-                (50., "Virage".into()),
-                (70., "Sens".into()),
+                (50., "Corner".into()),
+                (70., "Direction".into()),
                 (120., "Zone".into()),
-                (90., "V. mini".into()),
-                (90., "Rayon mini".into()),
+                (90., "Min speed".into()),
+                (90., "Min radius".into()),
             ],
             theme::MUTED,
         );
@@ -1450,7 +1434,7 @@ impl CoachView {
                     (70., format::direction(c.direction).into()),
                     (
                         120.,
-                        format!("{:.1}–{:.1} %", c.start_pct * 100.0, c.end_pct * 100.0).into(),
+                        format!("{:.1}–{:.1}%", c.start_pct * 100.0, c.end_pct * 100.0).into(),
                     ),
                     (
                         90.,
@@ -1465,9 +1449,9 @@ impl CoachView {
             div()
                 .text_sm()
                 .text_color(color(theme::MUTED))
-                .child("Détectés après le premier tour valide.")
+                .child("Detected after the first valid lap.")
         });
-        panel("Virages (meilleur tour)")
+        panel("Corners (best lap)")
             .flex_1()
             .child(header)
             .children(empty)
@@ -1501,7 +1485,7 @@ impl Render for CoachView {
                     .flex_1()
                     .gap_3()
                     .min_h_0()
-                    // Colonne de gauche : session, référence, plan, tours.
+                    // Left column: session, reference, plan, laps.
                     .child(
                         div()
                             .w(px(380.))
@@ -1519,7 +1503,7 @@ impl Render for CoachView {
                                     .child(self.render_chat(window, cx)),
                             ),
                     )
-                    // Colonne de droite : live, virages, consignes.
+                    // Right column: live, corners, cues.
                     .child(
                         div()
                             .flex_1()

@@ -1,4 +1,4 @@
-//! Mise en forme des valeurs affichées.
+//! Formatting of displayed values.
 
 use telemetry::{Direction, LapFlags};
 
@@ -14,7 +14,7 @@ pub fn lap_time(secs: f64) -> String {
     format!("{m}:{s:02}.{ms:03}")
 }
 
-/// Écart signé : `+0.123`, `-1.045`.
+/// Signed gap: `+0.123`, `-1.045`.
 pub fn delta(secs: f64) -> String {
     if !secs.is_finite() {
         return String::new();
@@ -25,7 +25,7 @@ pub fn delta(secs: f64) -> String {
     format!("{secs:+.3}")
 }
 
-/// Écart de position en mètres : `+12 m`.
+/// Position gap in metres: `+12 m`.
 pub fn meters(d: Option<f64>) -> String {
     match d {
         Some(d) if d.is_finite() => format!("{d:+.0} m"),
@@ -33,7 +33,7 @@ pub fn meters(d: Option<f64>) -> String {
     }
 }
 
-/// Rapport sans unité : `0.92`.
+/// Unitless ratio: `0.92`.
 pub fn ratio(r: Option<f64>) -> String {
     match r {
         Some(r) if r.is_finite() => format!("{r:.2}"),
@@ -59,22 +59,22 @@ pub fn gear(g: i32) -> String {
 
 pub fn direction(d: Direction) -> &'static str {
     match d {
-        Direction::Left => "gauche",
-        Direction::Right => "droite",
+        Direction::Left => "left",
+        Direction::Right => "right",
     }
 }
 
 pub fn lap_status(f: &LapFlags) -> &'static str {
     if !f.complete {
-        "partiel"
+        "partial"
     } else if f.pit {
-        "stands"
+        "pit"
     } else if f.discontinuity {
-        "interrompu"
+        "interrupted"
     } else if f.off_track > 0 {
-        "hors piste"
+        "off track"
     } else {
-        "valide"
+        "valid"
     }
 }
 
