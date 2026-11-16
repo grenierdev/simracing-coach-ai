@@ -9,10 +9,10 @@ use triggers::RuntimeStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Who {
-    Pilote,
+    Driver,
     Coach,
-    Outil,
-    Systeme,
+    Tool,
+    System,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,18 +57,18 @@ impl Chat {
     }
 
     pub fn system_message(&mut self, text: impl Into<String>) {
-        self.push(Who::Systeme, text.into(), None);
+        self.push(Who::System, text.into(), None);
     }
 
     pub fn pilot_message(&mut self, text: &str, turn: u64) {
-        self.push(Who::Pilote, text.trim().to_string(), Some(turn));
+        self.push(Who::Driver, text.trim().to_string(), Some(turn));
     }
 
     pub fn apply(&mut self, e: CoachEvent) {
         match e {
             CoachEvent::Status(s) => {
                 if let AgentStatus::Failed(err) = &s {
-                    self.push(Who::Systeme, format!("Agent arrêté : {err}"), None);
+                    self.push(Who::System, format!("Agent arrêté : {err}"), None);
                 }
                 self.status = Some(s);
             }
@@ -90,7 +90,7 @@ impl Chat {
                 });
                 if !known {
                     let short = short_tool_name(&name);
-                    self.push(Who::Outil, short.clone(), Some(turn));
+                    self.push(Who::Tool, short.clone(), Some(turn));
                     if let Some(last) = self.entries.last_mut() {
                         last.tool = Some((id, short, None));
                     }
@@ -98,13 +98,13 @@ impl Chat {
             }
             CoachEvent::Permission { tool, allowed } => {
                 if !allowed {
-                    self.push(Who::Systeme, format!("Outil refusé : {tool}"), None);
+                    self.push(Who::System, format!("Outil refusé : {tool}"), None);
                 }
             }
             CoachEvent::TurnEnd { latency, .. } => {
                 self.last_latency = Some(latency);
             }
-            CoachEvent::Error(err) => self.push(Who::Systeme, format!("Erreur : {err}"), None),
+            CoachEvent::Error(err) => self.push(Who::System, format!("Erreur : {err}"), None),
         }
     }
 
@@ -132,7 +132,7 @@ impl Chat {
                     e.text = text;
                 }
                 None => {
-                    self.push(Who::Outil, text, None);
+                    self.push(Who::Tool, text, None);
                     if let Some(last) = self.entries.last_mut() {
                         last.tool = Some((String::new(), t.name.clone(), Some(t.millis)));
                     }
@@ -187,7 +187,7 @@ pub fn pilot_context(
         last_corner,
         next_corner,
         live_delta,
-        recent_consignes: coach
+        recent_cues: coach
             .log
             .iter()
             .rev()
@@ -225,7 +225,7 @@ mod tests {
             text: "Autre.".into(),
         });
         let who: Vec<Who> = c.entries.iter().map(|e| e.who).collect();
-        assert_eq!(who, vec![Who::Pilote, Who::Coach, Who::Outil, Who::Coach]);
+        assert_eq!(who, vec![Who::Driver, Who::Coach, Who::Tool, Who::Coach]);
         assert_eq!(c.entries[1].text, "Je regarde. Le T4.");
         assert_eq!(c.entries[2].text, "get_session_overview · 3 ms");
         c.sync_tools(&[ToolCallLog {

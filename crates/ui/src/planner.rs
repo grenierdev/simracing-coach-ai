@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_lists_overview_and_active_consignes() {
+    fn prompt_lists_overview_and_active_triggers() {
         let plan =
             Plan::parse("[[trigger]]\nid = \"auto-T4\"\ncorner = \"T4\"\ntext = \"Patience.\"")
                 .unwrap();

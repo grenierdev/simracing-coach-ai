@@ -729,12 +729,12 @@ impl CoachView {
     fn render_chat(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entries = self.chat.entries.iter().rev().take(40).rev().map(|e| {
             let (who, tone) = match e.who {
-                Who::Pilote => ("Pilote", theme::BEST),
+                Who::Driver => ("Pilote", theme::BEST),
                 Who::Coach => ("Coach", theme::TEXT),
-                Who::Outil => ("outil", theme::MUTED),
-                Who::Systeme => ("", theme::WARN),
+                Who::Tool => ("outil", theme::MUTED),
+                Who::System => ("", theme::WARN),
             };
-            let small = matches!(e.who, Who::Outil | Who::Systeme);
+            let small = matches!(e.who, Who::Tool | Who::System);
             div()
                 .flex()
                 .w_full()
@@ -1319,7 +1319,7 @@ impl CoachView {
             };
             let label_color = if here { theme::WARN } else { theme::TEXT };
             let label = zone.corner.label();
-            let consigne = self
+            let cue = self
                 .coach_status
                 .triggers
                 .iter()
@@ -1381,7 +1381,7 @@ impl CoachView {
                         .overflow_hidden()
                         .text_ellipsis()
                         .text_color(color(theme::MUTED))
-                        .child(consigne),
+                        .child(cue),
                 )
         });
         let summary = match (last, best) {

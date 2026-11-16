@@ -14,7 +14,7 @@ pub struct PilotContext {
     /// Live delta to the reference, s.
     pub live_delta: Option<f64>,
     /// Most recent cues spoken (most recent last).
-    pub recent_consignes: Vec<String>,
+    pub recent_cues: Vec<String>,
 }
 
 /// `[Context] …` followed by the driver's message.
@@ -38,10 +38,10 @@ pub fn format_prompt(ctx: &PilotContext, message: &str) -> String {
     let mut out = String::from("[Context] ");
     out.push_str(if parts.is_empty() { "no telemetry" } else { "" });
     out.push_str(&parts.join(", "));
-    if !ctx.recent_consignes.is_empty() {
+    if !ctx.recent_cues.is_empty() {
         out.push_str("\nRecent cues: ");
         out.push_str(
-            &ctx.recent_consignes
+            &ctx.recent_cues
                 .iter()
                 .map(|c| format!("\"{c}\""))
                 .collect::<Vec<_>>()
@@ -65,7 +65,7 @@ mod tests {
             last_corner: Some("T4".into()),
             next_corner: Some("T5".into()),
             live_delta: Some(0.31),
-            recent_consignes: vec!["Hairpin, be patient on the throttle.".into()],
+            recent_cues: vec!["Hairpin, be patient on the throttle.".into()],
         };
         let p = format_prompt(&ctx, " no rotation in T5 ");
         assert_eq!(
