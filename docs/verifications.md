@@ -15,7 +15,7 @@ Survey of 2026-11-15. [V]: verified in the source code or documentation. [S]: as
 | Authentication | CLI subscription (claude.ai login), decided on 2026-11-15 |
 | System prompt | Coach prompt injected as `override` in place of Claude Code's, decided on 2026-11-15 |
 | Reference | Manual import of the Garage61 CSV; the API gives no access to laps outside one's team |
-| STT/TTS | **sherpa-onnx 1.13.8** embedded in the process (decided on 2026-11-15): Parakeet v3 for STT, Piper `fr_FR-siwis` for TTS; Kyutai dropped. Measured: STT 0.2 to 0.4 s, first TTS sound 0.1 to 0.2 s on CPU |
+| STT/TTS | **sherpa-onnx 1.13.8** embedded in the process (decided on 2026-11-15): Parakeet v3 for STT, Piper `en_US-ljspeech` or `fr_FR-siwis` for TTS depending on the voice language; Kyutai dropped. Measured: STT 0.2 to 0.4 s, first TTS sound 0.1 to 0.2 s on CPU |
 | 1.5 s latency | **Not met cold**: Claude's first word measured at 1.78 s (Haiku, cloud); to be measured again on the PC, see the last section |
 
 ## 1. Crates for the iRacing SDK and .ibt files
@@ -137,13 +137,15 @@ Chosen: **sherpa-onnx**, embedded in the process, with no server, no Python and 
 - [V] The `sherpa-onnx-sys` build script downloads a prebuilt library from the GitHub releases (static by default). On a machine with normal Internet access, `cargo build` is enough.
 - [V] The same libraries are published on npm (`sherpa-onnx-linux-x64`, `sherpa-onnx-win-x64`) and on PyPI (`sherpa-onnx-core`). To use them: the `shared` feature, plus `SHERPA_ONNX_LIB_DIR` pointing to the library folder. This is what was used for the measurements below, since the GitHub releases were unreachable from the cloud session.
 
-### French models (verified on Hugging Face, `csukuangfj/...` repositories)
+### Voice models (verified on Hugging Face, `csukuangfj/...` repositories)
 
 | Use | Model | Size | License |
 |---|---|---|---|
 | STT | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` (25 European languages) | ~670 MB | CC-BY 4.0 (NVIDIA) [S] |
 | STT, alternative | `sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8` | smaller | [S] |
-| TTS | `vits-piper-fr_FR-siwis-medium` (female voice) | 63 MB | CC-BY 4.0 [V] |
+| TTS, French | `vits-piper-fr_FR-siwis-medium` (female voice) | 63 MB | CC-BY 4.0 [V] |
+| TTS, English | `vits-piper-en_US-ljspeech-medium` (female voice, LJ Speech dataset) | 79 MB | public domain [V] |
+| TTS, English | `en_US-ryan`, `en_US-hfc_female` | | CC BY-NC-SA 4.0 [V]: avoid |
 | TTS | `vits-piper-fr_FR-tom-medium` (male voice) | 61 MB | **AGPLv3** [V]: avoid |
 | TTS | other Piper `fr_FR` voices: gilles, mls, upmc, tjiho, miro | | to check one by one |
 | TTS | multilingual Kokoro, voice `ff_siwis` (speaker 30) | ~300 MB [S] | Apache 2.0 [S] |
@@ -163,7 +165,15 @@ French coaching sentences synthesized then transcribed back (English glosses in 
 - « Tu perds deux dixièmes au virage quatre, reprends les gaz plus tôt. » → « Tu perds deux dixièmes au virage 4. Reprends les gaz plus tôt. » (You're losing two tenths in corner four, get on the throttle earlier.)
 - « Je n'ai plus de rotation au T5, qu'est-ce que je change ? » → identical. (I've lost rotation at T5, what should I change?)
 
-Parakeet writes numbers as digits, which makes it easier to identify corners ("T5", "virage 4"). A recent desktop PC should do better than these shared vCPUs.
+In French, Parakeet writes numbers as digits, which makes it easier to identify corners ("T5", "virage 4").
+
+English sentences with the `en_US-ljspeech` voice (2026-11-16, same machine, 4 threads): TTS 120 to 200 ms, STT 220 to 310 ms for 2.6 to 4 s of audio.
+
+- "Brake five meters later in turn five." → "Break five meters later in turn five." (homophone; harmless for Claude)
+- "You lose two tenths in turn four, get back on the throttle earlier." → identical.
+- "I have no rotation in T5, what should I change?" → "I have no rotation in T five. What should I change?"
+
+In English, Parakeet spells numbers out ("T five"); Claude maps them to corners without help. A recent desktop PC should do better than these shared vCPUs.
 
 ### Planned use
 

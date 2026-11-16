@@ -107,9 +107,9 @@ Engine rules:
 
 ## Voice
 
-The engines sit behind the `voice::Tts` and `voice::Stt` traits, so an engine can be swapped without touching the rest. Current implementations: `SherpaTts::piper` (default voice `fr_FR-siwis`), `SherpaTts::kokoro`, `SherpaStt::parakeet`, and `SilentTts` (mute).
+The engines sit behind the `voice::Tts` and `voice::Stt` traits, so an engine can be swapped without touching the rest. Current implementations: `SherpaTts::piper` (`en_US-ljspeech` or `fr_FR-siwis`, depending on the voice language), `SherpaTts::kokoro`, `SherpaStt::parakeet`, and `SilentTts` (mute).
 
-On first launch, the voice (about 80 MB) is downloaded from Hugging Face into the user's data folder (`%LOCALAPPDATA%\simcoach\data\models`), or into `SIMCOACH_MODELS_DIR`. To download in advance, together with the speech recognition model (about 670 MB):
+On first launch, the voice of the selected language (about 80 MB) is downloaded from Hugging Face into the user's data folder (`%LOCALAPPDATA%\simcoach\data\models`), or into `SIMCOACH_MODELS_DIR`. To download in advance both voices (or one, with `--language en|fr`), together with the speech recognition model (about 670 MB):
 
 ```sh
 cargo run -p voice --no-default-features --example download_models -- --stt
@@ -125,7 +125,15 @@ Replay mode and the synthetic session make it possible to develop without runnin
 
 ## Voice language
 
-The voice language (speech recognition, text-to-speech and the coach's spoken replies) will be selectable between French and English.
+The voice language is English or French. It sets:
+
+- the text-to-speech voice: Piper `en_US-ljspeech` (public-domain LJ Speech dataset) or Piper `fr_FR-siwis` (CC-BY 4.0);
+- the language Claude replies in, for the conversation and for the cues it writes (`say`, `update_plan`): a "Language" section is appended to both system prompts at startup;
+- speech recognition needs no setting: Parakeet v3 recognizes both languages.
+
+Choose it with the **Voice** button in the voice settings (applies on the next launch; saved in `settings.toml` as `language = "en"` or `"fr"`), or with `--language en|fr` on the command line, which overrides the setting. English is the default.
+
+Everything else (interface, logs, plan files, prompts, the `[Context]` block sent to Claude) is in English. A French `CLAUDE.md` left by v0.1.0 in the conversation session folder is renamed `CLAUDE.v0.1.md` and replaced by the English default.
 
 ## Building
 
