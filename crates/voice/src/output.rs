@@ -1,6 +1,6 @@
 //! Audio output.
 //!
-//! [`CpalSink`] plays on the default device (WASAPI on Windows): a thread keeps
+//! [`CpalSink`] plays on a chosen or the default device (WASAPI on Windows): a thread keeps
 //! the cpal stream open and the audio callback pulls from a sample queue.
 //! [`NullSink`] simulates real-time playback when no device is available
 //! (server, CI), so cue sequencing stays correct.
@@ -78,12 +78,20 @@ pub struct CpalSink {
     queue: Arc<Mutex<Queue>>,
     sample_rate: u32,
     device: String,
-    _thread: std::thread::JoinHandle<()>,
+    /// Dropping it ends the thread holding the stream, which closes it.
+    _stop: crossbeam_channel::Sender<()>,
 }
 
 impl CpalSink {
     /// Opens the default output device.
     pub fn open() -> Result<Self, VoiceError> {
+        Self::open_device(None)
+    }
+
+    /// Opens the device `id` (`None`: system default).
+    pub fn open_device(id: Option<&str>) -> Result<Self, VoiceError> {
+        let id = id.map(str::to_string);
+        let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
         let queue = Arc::new(Mutex::new(Queue {
             samples: VecDeque::new(),
         }));
@@ -91,10 +99,10 @@ impl CpalSink {
         let q = queue.clone();
         // The cpal stream is not `Send` on every platform: it lives and dies in
         // its own thread.
-        let thread = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("audio-out".into())
             .spawn(move || {
-                let stream = match open_stream(q) {
+                let stream = match open_stream(id.as_deref(), q) {
                     Ok((stream, rate, name)) => {
                         let _ = tx.send(Ok((rate, name)));
                         stream
@@ -104,11 +112,9 @@ impl CpalSink {
                         return;
                     }
                 };
-                // Keep the stream open for the lifetime of the program.
-                loop {
-                    std::thread::park();
-                    let _ = &stream;
-                }
+                // Keep the stream open until the sink is dropped.
+                let _ = stop_rx.recv();
+                drop(stream);
             })
             .map_err(|e| VoiceError::Output(e.to_string()))?;
         match rx.recv_timeout(Duration::from_secs(5)) {
@@ -116,7 +122,7 @@ impl CpalSink {
                 queue,
                 sample_rate,
                 device,
-                _thread: thread,
+                _stop: stop_tx,
             }),
             Ok(Err(e)) => Err(VoiceError::Output(e)),
             Err(_) => Err(VoiceError::Output("the device is not responding".into())),
@@ -124,12 +130,14 @@ impl CpalSink {
     }
 }
 
-fn open_stream(queue: Arc<Mutex<Queue>>) -> Result<(cpal::Stream, u32, String), String> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+fn open_stream(
+    id: Option<&str>,
+    queue: Arc<Mutex<Queue>>,
+) -> Result<(cpal::Stream, u32, String), String> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
     use cpal::{FromSample, SampleFormat, SizedSample};
 
-    let host = cpal::default_host();
-    let device = host.default_output_device().ok_or("no output device")?;
+    let device = crate::devices::find(crate::Direction::Output, id)?;
     let name = device
         .description()
         .map(|d| d.to_string())
@@ -205,6 +213,45 @@ impl AudioSink for CpalSink {
     }
 }
 
+/// Output whose device can be changed while running: the speaker keeps the
+/// same handle, playback continues on the new device.
+pub struct SwitchableSink {
+    inner: Mutex<Arc<dyn AudioSink>>,
+}
+
+impl SwitchableSink {
+    pub fn new(inner: Arc<dyn AudioSink>) -> Self {
+        SwitchableSink {
+            inner: Mutex::new(inner),
+        }
+    }
+
+    /// Replaces the output; the sentence being played on the old one stops.
+    pub fn replace(&self, sink: Arc<dyn AudioSink>) {
+        let old = std::mem::replace(&mut *self.inner.lock().unwrap(), sink);
+        old.stop();
+    }
+
+    fn current(&self) -> Arc<dyn AudioSink> {
+        self.inner.lock().unwrap().clone()
+    }
+}
+
+impl AudioSink for SwitchableSink {
+    fn name(&self) -> String {
+        self.current().name()
+    }
+    fn play(&self, audio: &Audio) {
+        self.current().play(audio)
+    }
+    fn stop(&self) {
+        self.current().stop()
+    }
+    fn is_playing(&self) -> bool {
+        self.current().is_playing()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +262,21 @@ mod tests {
         let out = resample(&src, 22_050, 48_000);
         assert!((out.len() as i64 - 48_000).abs() <= 3);
         assert!((out[24_000] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn switchable_sink_delegates_to_the_current_output() {
+        let s = SwitchableSink::new(Arc::new(NullSink::default()));
+        let a = Audio {
+            samples: vec![0.0; 16_000],
+            sample_rate: 16_000,
+        };
+        s.play(&a);
+        assert!(s.is_playing());
+        s.replace(Arc::new(NullSink::default()));
+        assert!(!s.is_playing(), "the new output starts silent");
+        s.play(&a);
+        assert!(s.is_playing());
     }
 
     #[test]

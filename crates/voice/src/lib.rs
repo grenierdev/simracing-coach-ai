@@ -9,6 +9,7 @@
 //! - [`models`]: model download from Hugging Face;
 //! - `sherpa` (feature): sherpa-onnx engines.
 
+pub mod devices;
 pub mod language;
 pub mod listener;
 pub mod models;
@@ -20,9 +21,10 @@ pub mod speaker;
 
 use thiserror::Error;
 
+pub use devices::{AudioDevice, Direction};
 pub use language::Language;
 pub use listener::{Listener, ListenerStatus, Transcript};
-pub use output::{AudioSink, CpalSink, NullSink};
+pub use output::{AudioSink, CpalSink, NullSink, SwitchableSink};
 pub use recorder::{Microphone, Recorder};
 pub use speaker::{Speaker, SpeakerState, SpeakerStatus};
 
@@ -34,6 +36,8 @@ pub enum VoiceError {
     Engine(String),
     #[error("audio output: {0}")]
     Output(String),
+    #[error("microphone: {0}")]
+    Input(String),
     #[error("download: {0}")]
     Download(String),
     #[error("I/O: {0}")]

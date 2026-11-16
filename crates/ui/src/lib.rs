@@ -71,7 +71,10 @@ pub struct Services {
     pub input: Option<Arc<InputService>>,
     pub listener: Option<Arc<Listener>>,
     pub recorder: Option<Arc<Recorder>>,
-    pub mic_name: Option<String>,
+    /// Switchable output of the coach's voice (absent with `--no-voice`).
+    pub output: Option<Arc<voice::SwitchableSink>>,
+    /// Startup warnings shown in the conversation (device not found…).
+    pub notes: Vec<String>,
     pub settings: Settings,
     /// Voice language in use (settings or `--language`); a change in the
     /// settings applies on the next launch.
@@ -141,7 +144,9 @@ pub struct CoachView {
     input: Option<Arc<InputService>>,
     listener: Option<Arc<Listener>>,
     recorder: Option<Arc<Recorder>>,
-    mic_name: Option<String>,
+    output: Option<Arc<voice::SwitchableSink>>,
+    /// Open device list: direction and devices found when it was opened.
+    device_menu: Option<(voice::Direction, Vec<voice::AudioDevice>)>,
     settings: Settings,
     language: voice::Language,
     planner: Option<Planner>,
@@ -172,7 +177,8 @@ impl CoachView {
             input,
             listener,
             recorder,
-            mic_name,
+            output,
+            notes,
             settings,
             language,
             planner,
@@ -232,7 +238,8 @@ impl CoachView {
             input,
             listener,
             recorder,
-            mic_name,
+            output,
+            device_menu: None,
             settings,
             language,
             planner,
@@ -255,7 +262,49 @@ impl CoachView {
         if let Some(path) = options.plan {
             view.load_plan(path, cx);
         }
+        for n in notes {
+            view.chat.system_message(n);
+        }
         view
+    }
+
+    fn toggle_device_menu(&mut self, direction: voice::Direction) {
+        self.device_menu = match &self.device_menu {
+            Some((d, _)) if *d == direction => None,
+            _ => Some((direction, voice::devices::list(direction))),
+        };
+    }
+
+    /// Switches the microphone or the output to `device` (`None`: system
+    /// default) and saves the choice if it worked.
+    fn select_device(&mut self, direction: voice::Direction, device: Option<voice::AudioDevice>) {
+        self.device_menu = None;
+        let id = device.as_ref().map(|d| d.id.as_str());
+        let result = match direction {
+            voice::Direction::Input => match &self.recorder {
+                Some(r) => r.select(id).map(|_| ()),
+                None => Ok(()),
+            },
+            voice::Direction::Output => match &self.output {
+                Some(o) => voice::CpalSink::open_device(id).map(|sink| o.replace(Arc::new(sink))),
+                None => Ok(()),
+            },
+        };
+        if let Err(e) = result {
+            self.chat.system_message(format!("Device not changed: {e}"));
+            return;
+        }
+        let choice = device.map(|d| settings::DeviceChoice {
+            id: d.id,
+            name: d.name,
+        });
+        match direction {
+            voice::Direction::Input => self.settings.microphone = choice,
+            voice::Direction::Output => self.settings.output = choice,
+        }
+        if let Err(e) = self.settings.save() {
+            self.chat.system_message(format!("Settings not saved: {e}"));
+        }
     }
 
     fn send_message(&mut self) {
@@ -592,6 +641,7 @@ impl CoachView {
             SpeakerState::Loading => (theme::WARN, st.detail.unwrap_or_else(|| "loading".into())),
             SpeakerState::Ready => match (&self.settings.ptt, &self.recorder) {
                 (_, None) => (theme::WARN, "no microphone".into()),
+                (_, Some(r)) if r.device().is_none() => (theme::WARN, "no microphone".into()),
                 (None, _) => (theme::WARN, "push-to-talk button not set".into()),
                 (Some(b), Some(_)) => (theme::OK, b.label()),
             },
@@ -718,16 +768,123 @@ impl CoachView {
                         self.settings.language, self.language
                     ))
             }))
-            .children(self.mic_name.as_ref().map(|m| {
+            .child(
+                self.render_device_row(
+                    voice::Direction::Input,
+                    "Microphone",
+                    self.recorder
+                        .as_ref()
+                        .and_then(|r| r.device())
+                        .unwrap_or_else(|| "none".into()),
+                    self.settings.microphone.is_none(),
+                    cx,
+                ),
+            )
+            .children(self.output.as_ref().map(|o| {
+                self.render_device_row(
+                    voice::Direction::Output,
+                    "Coach output",
+                    voice::AudioSink::name(o.as_ref()),
+                    self.settings.output.is_none(),
+                    cx,
+                )
+            }))
+            .children(self.render_device_menu(cx))
+            .children(latency.map(|l| div().text_xs().text_color(color(theme::MUTED)).child(l)))
+    }
+
+    fn render_device_row(
+        &self,
+        direction: voice::Direction,
+        label: &'static str,
+        current: String,
+        is_default: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let open = matches!(&self.device_menu, Some((d, _)) if *d == direction);
+        let id = match direction {
+            voice::Direction::Input => "device-in",
+            voice::Direction::Output => "device-out",
+        };
+        let suffix = if is_default { " (default)" } else { "" };
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .text_xs()
+            .child(
                 div()
-                    .text_xs()
+                    .flex_none()
                     .text_color(color(theme::MUTED))
+                    .child(format!("{label}:")),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(format!("Microphone: {m}"))
-            }))
-            .children(latency.map(|l| div().text_xs().text_color(color(theme::MUTED)).child(l)))
+                    .child(format!("{current}{suffix}")),
+            )
+            .child(
+                div()
+                    .id(id)
+                    .px_2()
+                    .py_1()
+                    .flex_none()
+                    .rounded_md()
+                    .bg(color(theme::BORDER))
+                    .cursor_pointer()
+                    .child(if open { "Close" } else { "Change…" })
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.toggle_device_menu(direction);
+                        cx.notify();
+                    })),
+            )
+    }
+
+    /// List of devices under the row that opened it.
+    fn render_device_menu(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let (direction, devices) = self.device_menu.clone()?;
+        let selected = match direction {
+            voice::Direction::Input => settings::DeviceChoice::id(&self.settings.microphone),
+            voice::Direction::Output => settings::DeviceChoice::id(&self.settings.output),
+        }
+        .map(str::to_string);
+        let mut entries: Vec<(String, Option<voice::AudioDevice>)> =
+            vec![("System default".into(), None)];
+        entries.extend(devices.into_iter().map(|d| (d.name.clone(), Some(d))));
+        let rows = entries.into_iter().enumerate().map(|(i, (name, device))| {
+            let active = device.as_ref().map(|d| d.id.clone()) == selected;
+            div()
+                .id(("device", i))
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .cursor_pointer()
+                .text_color(color(if active { theme::BEST } else { theme::TEXT }))
+                .hover(|s| s.bg(color(theme::BORDER)))
+                .child(if active { format!("● {name}") } else { name })
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.select_device(direction, device.clone());
+                    cx.notify();
+                }))
+        });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .text_xs()
+                .p_1()
+                .rounded_md()
+                .border_1()
+                .border_color(color(theme::BORDER))
+                .children(rows),
+        )
     }
 
     fn render_agent_pill(&self) -> gpui::Div {

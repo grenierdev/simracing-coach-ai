@@ -174,7 +174,10 @@ impl Speaker {
     }
 
     pub fn status(&self) -> SpeakerStatus {
-        self.status.lock().unwrap().clone()
+        let mut s = self.status.lock().unwrap().clone();
+        // The output can be switched while running.
+        s.output = self.sink.name();
+        s
     }
 }
 

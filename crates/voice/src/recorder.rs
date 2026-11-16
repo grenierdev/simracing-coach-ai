@@ -5,6 +5,7 @@
 //! talking as they press the button.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -92,22 +93,69 @@ impl Microphone for Recorder {
     }
 }
 
+/// Microphone with a switchable device. Without a device it records silence.
 pub struct Recorder {
     capture: Arc<Mutex<Capture>>,
+    stream: Mutex<Option<StreamThread>>,
+    /// Generation of the active stream; callbacks of older streams are ignored.
+    generation: Arc<AtomicU64>,
+}
+
+/// Thread holding the cpal stream (not `Send` on every platform); dropping
+/// `_stop` ends the thread, which closes the stream.
+struct StreamThread {
     device: String,
-    _thread: std::thread::JoinHandle<()>,
+    _stop: crossbeam_channel::Sender<()>,
+}
+
+/// Where a stream callback writes.
+struct Target {
+    capture: Arc<Mutex<Capture>>,
+    current: Arc<AtomicU64>,
+    generation: u64,
+}
+
+impl Default for Recorder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Recorder {
+    /// Recorder without a device: call [`Recorder::select`].
+    pub fn new() -> Self {
+        Recorder {
+            capture: Arc::default(),
+            stream: Mutex::new(None),
+            generation: Arc::default(),
+        }
+    }
+
     /// Opens the default microphone.
     pub fn open() -> Result<Self, VoiceError> {
-        let capture: Arc<Mutex<Capture>> = Arc::default();
+        let r = Self::new();
+        r.select(None)?;
+        Ok(r)
+    }
+
+    /// Switches to the device `id` (`None`: system default). On failure the
+    /// previous device stays open. Returns the device name.
+    pub fn select(&self, id: Option<&str>) -> Result<String, VoiceError> {
+        let mut stream = self.stream.lock().unwrap();
+        let previous = self.generation.load(Ordering::SeqCst);
+        let generation = previous + 1;
+        let id = id.map(str::to_string);
         let (tx, rx) = crossbeam_channel::bounded::<Result<String, String>>(1);
-        let c = capture.clone();
-        let thread = std::thread::Builder::new()
+        let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
+        let target = Target {
+            capture: self.capture.clone(),
+            current: self.generation.clone(),
+            generation,
+        };
+        std::thread::Builder::new()
             .name("audio-in".into())
             .spawn(move || {
-                let stream = match open_stream(c) {
+                let s = match open_stream(id.as_deref(), target) {
                     Ok((s, name)) => {
                         let _ = tx.send(Ok(name));
                         s
@@ -117,27 +165,33 @@ impl Recorder {
                         return;
                     }
                 };
-                loop {
-                    std::thread::park();
-                    let _ = &stream;
-                }
+                let _ = stop_rx.recv();
+                drop(s);
             })
-            .map_err(|e| VoiceError::Output(e.to_string()))?;
+            .map_err(|e| VoiceError::Input(e.to_string()))?;
         match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(device)) => Ok(Recorder {
-                capture,
-                device,
-                _thread: thread,
-            }),
-            Ok(Err(e)) => Err(VoiceError::Output(format!("microphone: {e}"))),
-            Err(_) => Err(VoiceError::Output(
-                "the microphone is not responding".into(),
-            )),
+            Ok(Ok(device)) => {
+                // From here on, only the new stream's callbacks are recorded;
+                // replacing the previous thread's sender closes its stream.
+                self.generation.store(generation, Ordering::SeqCst);
+                *stream = Some(StreamThread {
+                    device: device.clone(),
+                    _stop: stop_tx,
+                });
+                Ok(device)
+            }
+            Ok(Err(e)) => Err(VoiceError::Input(e)),
+            Err(_) => Err(VoiceError::Input("not responding".into())),
         }
     }
 
-    pub fn device(&self) -> &str {
-        &self.device
+    /// Name of the open device, if any.
+    pub fn device(&self) -> Option<String> {
+        self.stream
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.device.clone())
     }
 
     pub fn start(&self) {
@@ -157,12 +211,11 @@ impl Recorder {
     }
 }
 
-fn open_stream(capture: Arc<Mutex<Capture>>) -> Result<(cpal::Stream, String), String> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+fn open_stream(id: Option<&str>, target: Target) -> Result<(cpal::Stream, String), String> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
     use cpal::{SampleFormat, SizedSample};
 
-    let host = cpal::default_host();
-    let device = host.default_input_device().ok_or("no microphone")?;
+    let device = crate::devices::find(crate::Direction::Input, id)?;
     let name = device
         .description()
         .map(|d| d.to_string())
@@ -171,23 +224,34 @@ fn open_stream(capture: Arc<Mutex<Capture>>) -> Result<(cpal::Stream, String), S
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
     let channels = config.channels as usize;
-    *capture.lock().unwrap() = Capture::new(config.sample_rate);
+    let rate = config.sample_rate;
 
     fn build<T: SizedSample + Into<MicSample>>(
         device: &cpal::Device,
         config: cpal::StreamConfig,
         channels: usize,
-        capture: Arc<Mutex<Capture>>,
+        rate: u32,
+        target: Target,
     ) -> Result<cpal::Stream, String> {
+        let mut active = false;
         device
             .build_input_stream(
                 config,
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
+                    if target.current.load(Ordering::Relaxed) != target.generation {
+                        return;
+                    }
+                    let mut c = target.capture.lock().unwrap();
+                    if !active {
+                        // First block of this stream: reset to its sample rate.
+                        *c = Capture::new(rate);
+                        active = true;
+                    }
                     let mono: Vec<f32> = data
                         .chunks(channels)
                         .map(|f| f.iter().map(|s| (*s).into().0).sum::<f32>() / channels as f32)
                         .collect();
-                    capture.lock().unwrap().push(&mono);
+                    c.push(&mono);
                 },
                 |e| tracing::warn!("microphone: {e}"),
                 None,
@@ -196,9 +260,9 @@ fn open_stream(capture: Arc<Mutex<Capture>>) -> Result<(cpal::Stream, String), S
     }
 
     let stream = match format {
-        SampleFormat::F32 => build::<f32>(&device, config, channels, capture),
-        SampleFormat::I16 => build::<i16>(&device, config, channels, capture),
-        SampleFormat::U16 => build::<u16>(&device, config, channels, capture),
+        SampleFormat::F32 => build::<f32>(&device, config, channels, rate, target),
+        SampleFormat::I16 => build::<i16>(&device, config, channels, rate, target),
+        SampleFormat::U16 => build::<u16>(&device, config, channels, rate, target),
         other => Err(format!("unsupported sample format: {other}")),
     }?;
     stream.play().map_err(|e| e.to_string())?;

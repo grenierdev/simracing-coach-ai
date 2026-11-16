@@ -252,6 +252,12 @@ Sequence:
 
 The interface shows the latency of the last voice turn: end of speech → text → Claude's first word → first sound.
 
+### Audio devices
+
+The conversation panel has a **Microphone** row (push-to-talk input) and a **Coach output** row (the coach's voice: cues and spoken replies). **Change…** lists the devices (WASAPI endpoints on Windows) with **System default** first; the selected device opens immediately, without a restart, and is saved in `settings.toml` by its id (`[microphone]` / `[output]` with `id` and `name`). For example, the coach can speak in the headset while the game sound goes to the speakers.
+
+If the saved device is not connected at startup, the program falls back to the system default and says so in the conversation. If a device cannot be opened when chosen, the previous one stays active.
+
 ## Automatic planning of the next lap
 
 A second ACP session, separate from the conversation, plays the race engineer (Sonnet by default, `--analysis-model`, thinking allowed). On each complete, valid lap:

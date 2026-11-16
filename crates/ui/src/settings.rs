@@ -18,6 +18,24 @@ pub struct Settings {
     pub auto_planning: bool,
     /// Voice language: speech recognition, text-to-speech, coach replies.
     pub language: Language,
+    /// Push-to-talk microphone; system default if absent.
+    pub microphone: Option<DeviceChoice>,
+    /// Output for the coach's voice; system default if absent.
+    pub output: Option<DeviceChoice>,
+}
+
+/// An audio device saved by id; the name is for display (and for the log
+/// when the device is no longer connected).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceChoice {
+    pub id: String,
+    pub name: String,
+}
+
+impl DeviceChoice {
+    pub fn id(choice: &Option<DeviceChoice>) -> Option<&str> {
+        choice.as_ref().map(|c| c.id.as_str())
+    }
 }
 
 impl Default for Settings {
@@ -27,6 +45,8 @@ impl Default for Settings {
             speak_replies: true,
             auto_planning: true,
             language: Language::default(),
+            microphone: None,
+            output: None,
         }
     }
 }
@@ -83,6 +103,11 @@ mod tests {
             speak_replies: false,
             auto_planning: false,
             language: Language::French,
+            microphone: Some(DeviceChoice {
+                id: "wasapi:{0.0.1.00000000}.{abc}".into(),
+                name: "Headset microphone".into(),
+            }),
+            output: None,
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);

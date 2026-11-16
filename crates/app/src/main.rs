@@ -191,7 +191,13 @@ fn main() -> anyhow::Result<()> {
         ui::StartOptions { reference, plan },
         move || {
             let hub = TelemetryHub::spawn(source, TelemetryHubConfig::default());
-            let speaker = speech::start_speaker(no_voice, language);
+            let mut notes = vec![];
+            let (speaker, output) = speech::start_speaker(
+                no_voice,
+                language,
+                ui::settings::DeviceChoice::id(&settings.output),
+                &mut notes,
+            );
             let triggers = std::sync::Arc::new(triggers::TriggerRuntime::spawn(
                 hub.subscribe_samples(),
                 Box::new(speech::SpeakerOutput(speaker.clone())),
@@ -211,17 +217,13 @@ fn main() -> anyhow::Result<()> {
             });
             let input = std::sync::Arc::new(input::InputService::spawn());
             input.set_ptt(settings.ptt.clone());
-            let recorder: Option<std::sync::Arc<voice::Recorder>> = match voice::Recorder::open() {
-                Ok(r) => {
-                    tracing::info!("microphone: {}", r.device());
-                    Some(std::sync::Arc::new(r))
-                }
-                Err(e) => {
-                    tracing::warn!("{e}: push-to-talk unavailable");
-                    None
-                }
-            };
-            let mic_name = recorder.as_ref().map(|r| r.device().to_string());
+            let recorder = speech::open_microphone(
+                ui::settings::DeviceChoice::id(&settings.microphone),
+                &mut notes,
+            );
+            for n in &notes {
+                tracing::warn!("{n}");
+            }
             let listener = std::sync::Arc::new(speech::start_listener());
             let conversation = ui::conversation::Conversation::spawn(
                 ui::conversation::ConversationDeps {
@@ -230,9 +232,7 @@ fn main() -> anyhow::Result<()> {
                     triggers: triggers.clone(),
                     snapshot: hub.snapshot_handle(),
                     input: Some(input.clone()),
-                    recorder: recorder
-                        .clone()
-                        .map(|r| r as std::sync::Arc<dyn voice::Microphone>),
+                    recorder: Some(recorder.clone() as std::sync::Arc<dyn voice::Microphone>),
                     listener: Some(listener.clone()),
                 },
                 settings.speak_replies,
@@ -244,8 +244,9 @@ fn main() -> anyhow::Result<()> {
                 conversation,
                 input: Some(input),
                 listener: Some(listener),
-                recorder,
-                mic_name,
+                recorder: Some(recorder),
+                output,
+                notes,
                 settings,
                 language,
                 planner,
