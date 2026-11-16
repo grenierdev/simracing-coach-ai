@@ -1,0 +1,81 @@
+name: Release
+
+# Un tag `v*` compile l'exécutable Windows en release (sherpa-onnx statique,
+# runtime C statique) et publie une release GitHub avec l'archive.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de la release (ex. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # GPUI compile ses shaders HLSL avec fxc.exe (Windows SDK) en release.
+      - name: Localiser fxc.exe
+        shell: pwsh
+        run: |
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter fxc.exe |
+            Where-Object { $_.FullName -like '*\x64\*' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $fxc) { throw "fxc.exe introuvable" }
+          Write-Host "fxc : $($fxc.FullName)"
+          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+
+      - name: Compiler
+        run: cargo build --release -p app --bin simcoach
+
+      # Exécutable autonome : pas de DLL du runtime C ni d'onnxruntime à côté.
+      - name: Vérifier les dépendances
+        shell: pwsh
+        run: |
+          $exe = "target\release\simcoach.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($dll in @("VCRUNTIME140.dll", "MSVCP140.dll", "onnxruntime.dll", "sherpa-onnx-c-api.dll")) {
+            if ($text.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+              throw "simcoach.exe dépend de $dll"
+            }
+          }
+          $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+          Write-Host "simcoach.exe : $size Mo, sans DLL du runtime C ni d'onnxruntime"
+
+      - name: Empaqueter
+        shell: pwsh
+        run: |
+          $name = "simcoach-$env:TAG-windows-x64"
+          New-Item -ItemType Directory -Force "dist\$name" | Out-Null
+          Copy-Item target\release\simcoach.exe "dist\$name\"
+          Copy-Item -Recurse plans "dist\$name\plans"
+          Copy-Item README.md "dist\$name\"
+          Compress-Archive -Path "dist\$name" -DestinationPath "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+          "ARCHIVE=$name.zip" >> $env:GITHUB_ENV
+
+      - name: Publier la release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Coach simracing ${{ env.TAG }}
+          body_path: docs/release-notes/${{ env.TAG }}.md
+          prerelease: true
+          files: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
