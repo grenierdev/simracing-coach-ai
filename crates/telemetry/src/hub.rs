@@ -40,6 +40,9 @@ pub enum TelemetryEvent {
 #[derive(Debug, Clone, Default)]
 pub struct LiveSnapshot {
     pub source: String,
+    /// The source is the running game: `state == Connected` means iRacing is
+    /// running with a car on track or in the garage.
+    pub live: bool,
     pub state: ConnectionState,
     pub session: Option<SessionInfo>,
     pub sample: Option<Sample>,
@@ -82,6 +85,7 @@ impl TelemetryHub {
     pub fn spawn(source: Box<dyn TelemetrySource>, cfg: TelemetryHubConfig) -> Self {
         let snapshot = Arc::new(Mutex::new(LiveSnapshot {
             source: source.describe(),
+            live: source.is_live(),
             ..Default::default()
         }));
         let (tx, rx) = unbounded();

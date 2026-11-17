@@ -13,6 +13,7 @@ pub mod chat;
 pub mod conversation;
 pub mod format;
 mod panels;
+mod pin;
 pub mod planner;
 mod screens;
 pub mod settings;
@@ -232,8 +233,14 @@ pub struct CoachView {
     chat_seen: (usize, usize),
     /// Last analysis already added to the chat.
     analysis_seen: Option<i32>,
-    /// The saved "always on top" setting still has to be applied to the window.
-    apply_on_top: bool,
+    /// The window is pinned on top of the game.
+    pinned: bool,
+    /// Pin requested by the startup setting or by iRacing starting/stopping,
+    /// applied outside rendering.
+    pin_request: Option<bool>,
+    auto_pin: pin::AutoPin,
+    /// Window size before pinning, restored when unpinning.
+    restore_size: Option<gpui::Size<gpui::Pixels>>,
     _refresh: Task<()>,
 }
 
@@ -263,6 +270,14 @@ impl CoachView {
                 cx.background_executor().timer(REFRESH).await;
                 let alive = this.update(cx, |view, cx| {
                     view.snap = view.hub.snapshot();
+                    let iracing =
+                        view.snap.live && view.snap.state == telemetry::ConnectionState::Connected;
+                    if let Some(on) =
+                        view.auto_pin
+                            .update(iracing, view.settings.pin_with_iracing, view.pinned)
+                    {
+                        view.pin_request = Some(on);
+                    }
                     view.coach_status = view.coach.status();
                     view.speaker_status = view.speaker.status();
                     while let Ok(e) = view.conversation.events().try_recv() {
@@ -340,7 +355,10 @@ impl CoachView {
             analysis_seen: None,
             chat_scroll: gpui::ScrollHandle::new(),
             chat_seen: (0, 0),
-            apply_on_top: false,
+            pinned: false,
+            pin_request: None,
+            auto_pin: pin::AutoPin::default(),
+            restore_size: None,
             _refresh: refresh,
         };
         match options.reference {
@@ -357,7 +375,9 @@ impl CoachView {
         for n in notes {
             view.chat.system_message(n);
         }
-        view.apply_on_top = view.settings.always_on_top;
+        if view.settings.always_on_top {
+            view.pin_request = Some(true);
+        }
         view
     }
 
@@ -401,19 +421,43 @@ impl CoachView {
         }
     }
 
-    /// Pins the window on top of the game, in a compact size; unpinning
-    /// keeps the size.
-    fn set_on_top(&mut self, on: bool, window: &mut Window) {
-        match platform::set_topmost(window, on) {
-            Ok(()) => {
-                if on {
-                    window.resize(size(px(COMPACT.0), px(COMPACT.1)));
-                    self.screen = Screen::Coaching;
-                }
-                self.settings.always_on_top = on;
-                let _ = self.settings.save();
+    /// Pins the window on top of the game in a compact size, or releases it
+    /// and restores its size. `persist`: the driver's choice, saved as the
+    /// "always on top" setting.
+    fn set_on_top(&mut self, on: bool, persist: bool, window: &mut Window) {
+        if on != self.pinned {
+            if let Err(e) = platform::set_topmost(window, on) {
+                self.chat.system_message(format!("Always on top: {e}"));
+                return;
             }
-            Err(e) => self.chat.system_message(format!("Always on top: {e}")),
+            self.pinned = on;
+            if on {
+                self.restore_size = Some(window.viewport_size());
+                window.resize(size(px(COMPACT.0), px(COMPACT.1)));
+                self.screen = Screen::Coaching;
+            } else if let Some(previous) = self.restore_size.take() {
+                window.resize(previous);
+            }
+        }
+        if persist {
+            self.settings.always_on_top = on;
+            let _ = self.settings.save();
+        }
+    }
+
+    /// Pin button: the driver's choice wins over the automatic rule.
+    fn toggle_pin(&mut self, window: &mut Window) {
+        self.auto_pin.manual();
+        self.set_on_top(!self.pinned, true, window);
+    }
+
+    fn toggle_pin_with_iracing(&mut self) {
+        self.settings.pin_with_iracing = !self.settings.pin_with_iracing;
+        let _ = self.settings.save();
+        if self.settings.pin_with_iracing
+            && let Some(on) = self.auto_pin.enabled_now(self.pinned)
+        {
+            self.pin_request = Some(on);
         }
     }
 
@@ -632,9 +676,9 @@ impl CoachView {
 
 impl Render for CoachView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.apply_on_top) {
-            cx.defer_in(window, |view, window, cx| {
-                view.set_on_top(true, window);
+        if let Some(on) = self.pin_request.take() {
+            cx.defer_in(window, move |view, window, cx| {
+                view.set_on_top(on, false, window);
                 cx.notify();
             });
         }

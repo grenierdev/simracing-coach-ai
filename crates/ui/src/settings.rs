@@ -24,6 +24,9 @@ pub struct Settings {
     pub output: Option<DeviceChoice>,
     /// Compact coaching window kept on top of the game (Windows).
     pub always_on_top: bool,
+    /// Pin the coaching window on top while iRacing is running, release it
+    /// when iRacing stops (Windows).
+    pub pin_with_iracing: bool,
 }
 
 /// An audio device saved by id; the name is for display (and for the log
@@ -50,6 +53,7 @@ impl Default for Settings {
             microphone: None,
             output: None,
             always_on_top: false,
+            pin_with_iracing: true,
         }
     }
 }
@@ -112,6 +116,7 @@ mod tests {
             }),
             output: None,
             always_on_top: true,
+            pin_with_iracing: false,
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);

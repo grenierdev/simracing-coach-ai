@@ -274,4 +274,8 @@ impl TelemetrySource for LiveSource {
     fn describe(&self) -> String {
         "iRacing (live)".into()
     }
+
+    fn is_live(&self) -> bool {
+        true
+    }
 }

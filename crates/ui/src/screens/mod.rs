@@ -30,10 +30,9 @@ impl CoachView {
                 }))
         };
         let pin = platform::SUPPORTED.then(|| {
-            let on = self.settings.always_on_top;
-            button("pin", if on { "Unpin" } else { "Pin on top" }).on_click(cx.listener(
-                move |view, _, window, cx| {
-                    view.set_on_top(!on, window);
+            button("pin", if self.pinned { "Unpin" } else { "Pin on top" }).on_click(cx.listener(
+                |view, _, window, cx| {
+                    view.toggle_pin(window);
                     cx.notify();
                 },
             ))

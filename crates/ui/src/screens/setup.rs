@@ -28,26 +28,37 @@ impl CoachView {
                     ),
                 )
         });
-        let on_top = platform::SUPPORTED.then(|| {
-            let on = self.settings.always_on_top;
+        let option = |text: &'static str, control: gpui::Stateful<gpui::Div>| {
             div()
                 .flex()
                 .items_center()
                 .gap_2()
                 .text_sm()
-                .child(
-                    div()
-                        .flex_1()
-                        .child("Keep the compact coaching window on top of the game"),
-                )
-                .child(
-                    button("on-top-setup", if on { "On" } else { "Off" }).on_click(cx.listener(
-                        move |view, _, window, cx| {
-                            view.set_on_top(!on, window);
-                            cx.notify();
-                        },
-                    )),
-                )
+                .child(div().flex_1().child(text))
+                .child(control)
+        };
+        let on_off = |on: bool| if on { "On" } else { "Off" };
+        let on_top = platform::SUPPORTED.then(|| {
+            option(
+                "Keep the compact coaching window on top of the game",
+                button("on-top-setup", on_off(self.settings.always_on_top)).on_click(cx.listener(
+                    |view, _, window, cx| {
+                        view.toggle_pin(window);
+                        cx.notify();
+                    },
+                )),
+            )
+        });
+        let with_iracing = platform::SUPPORTED.then(|| {
+            option(
+                "Pin it on top automatically while iRacing is running",
+                button("pin-with-iracing", on_off(self.settings.pin_with_iracing)).on_click(
+                    cx.listener(|view, _, _, cx| {
+                        view.toggle_pin_with_iracing();
+                        cx.notify();
+                    }),
+                ),
+            )
         });
         div()
             .flex()
@@ -72,7 +83,12 @@ impl CoachView {
                     .flex_col()
                     .gap_2()
                     .child(panel("Voice").child(self.render_voice_settings(cx)))
-                    .child(panel("Coaching").children(planning).children(on_top)),
+                    .child(
+                        panel("Coaching")
+                            .children(planning)
+                            .children(on_top)
+                            .children(with_iracing),
+                    ),
             )
     }
 }

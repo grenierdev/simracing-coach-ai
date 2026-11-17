@@ -35,6 +35,10 @@ pub trait TelemetrySource: Send {
     /// Waits at most `timeout` for the next event. `Ok(None)`: nothing new.
     fn next_event(&mut self, timeout: Duration) -> Result<Option<SourceEvent>, SourceError>;
     fn describe(&self) -> String;
+    /// The source is the running game (not a replay).
+    fn is_live(&self) -> bool {
+        false
+    }
 }
 
 /// Replays an .ibt as if it were live, at the rate `tickRate × speed`.
