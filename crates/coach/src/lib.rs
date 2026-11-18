@@ -62,7 +62,7 @@ pub enum PromptCopy {
 /// Decides whether a session's `CLAUDE.md` copy is replaced by `default`.
 /// Line endings are ignored (the file may have been saved on Windows).
 pub fn prompt_copy(existing: Option<&str>, default: &str, previous: &[&str]) -> PromptCopy {
-    let norm = |s: &str| s.replace("\r\n", "\n").trim().to_string();
+    let norm = |s: &str| s.replace('\r', "").trim().to_string();
     match existing {
         None => PromptCopy::WriteDefault,
         Some(text) => {
