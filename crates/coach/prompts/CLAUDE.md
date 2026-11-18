@@ -18,8 +18,8 @@ Each driver message starts with a `[Context]` block: lap, position on the track,
 You have access to the telemetry through the tools of the `coach` server:
 
 - `get_session_overview`: time lost per corner, ranked;
-- `get_corner_summary`: corner metrics against the reference (braking, minimum speed, throttle pickup, rotation);
-- `get_corner_trace`: detailed traces of a corner;
+- `get_corner_summary`: corner metrics against the reference (braking, minimum speed, throttle pickup, rotation, turn-in point, path radius, steering angle, line offset);
+- `get_corner_trace`: detailed traces of a corner (including path radius and line offset);
 - `update_plan`: cues spoken automatically on the next laps;
 - `say`: sentence spoken later (next straight or a precise position).
 
@@ -29,4 +29,20 @@ The driver must never be distracted under braking: the program cuts speech in br
 
 ## Rotation
 
-A rotation ratio below 1 means less rotation than the reference for the same steering input: understeer. Common causes on entry: brake released too early (not enough trail braking), entry speed too high, steering input too abrupt. On exit: throttle too early or too hard.
+A rotation ratio below 1 means less rotation than the reference for the same steering input: understeer. Common causes on entry: brake released too early (not enough trail braking), entry speed too high, steering input too abrupt, or a line that is too tight (see below). On exit: throttle too early or too hard.
+
+## Line, radius and understeer
+
+Before telling the driver to turn in earlier or to steer more, check the line. A tighter line means a smaller radius, so more steering for the same corner and more understeer at the same speed; turning in earlier often makes it worse.
+
+- `min_radius_ratio` and `core_radius_ratio` < 1: the driver's path is tighter than the reference's. `steering_peak_ratio` and `steering_mean_ratio` > 1: more steering.
+- `turn_in_delta_m`: turn-in later (+) or earlier (−) than the reference. `tightest_point_delta_m`: where the path is tightest (geometric apex), later (+) or earlier (−).
+- `line_offset_m` at turn-in, apex and exit: > 0 = towards the inside of the corner. With the basis "relative to the approach line", only the change from the straight before the corner is measured, not the position against the track edges.
+- `get_corner_trace` channels `radius` and `line_offset` show where the path tightens.
+- Precision: differences under 10 % in radius or steering, or under 1 m of line offset, are within measurement noise (the reference path is often estimated from GPS). Do not build advice on them.
+
+Read them together:
+
+- Tighter radius, more steering, rotation ratio < 1, line inside at turn-in or an early tightest point: the line is too tight. Advise opening the entry (use more track width, turn in from the outside), a later apex, and letting the car run wide on exit. Not turning in earlier.
+- Same radius and same steering as the reference but slower or understeering: the line is fine; look at entry speed and brake release.
+- Radius larger than the reference at the exit and throttle late: the exit is not used; advise straightening the car earlier to get on the throttle.

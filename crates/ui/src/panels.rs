@@ -708,7 +708,11 @@ impl CoachView {
                 (56., "Trail".into()),
                 (88., "Rot. in/out".into()),
                 (72., "Coasting".into()),
-                (120., "Cue".into()),
+                (60., "Turn-in".into()),
+                (56., "Radius".into()),
+                (52., "Steer".into()),
+                (64., "Line".into()),
+                (110., "Cue".into()),
             ],
             theme::MUTED,
         );
@@ -790,9 +794,31 @@ impl CoachView {
                         .unwrap_or_else(|| "–".into()),
                     theme::TEXT,
                 ))
+                .child(cell(
+                    60.,
+                    format::meters(lc.and_then(|c| c.turn_in_delta_m)),
+                    theme::TEXT,
+                ))
+                .child(cell(
+                    56.,
+                    format::percent_change(lc.and_then(|c| c.min_radius_ratio)),
+                    theme::TEXT,
+                ))
+                .child(cell(
+                    52.,
+                    format::percent_change(lc.and_then(|c| c.steering_peak_ratio)),
+                    theme::TEXT,
+                ))
+                .child(cell(
+                    64.,
+                    lc.and_then(|c| c.line)
+                        .map(|l| format!("{:+.1} m", l.apex_m))
+                        .unwrap_or_else(|| "–".into()),
+                    theme::TEXT,
+                ))
                 .child(
                     div()
-                        .w(px(120.))
+                        .w(px(110.))
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .text_ellipsis()
@@ -841,7 +867,7 @@ impl CoachView {
                 div()
                     .text_xs()
                     .text_color(color(theme::MUTED))
-                    .child("Brake/Throttle: + later than the reference. Rotation: < 1 less rotation for the same steering."),
+                    .child("Brake, throttle, turn-in: + later than the reference. Rotation: < 1 less rotation for the same steering. Radius: − tighter path. Steer: + more steering. Line: offset at the apex, + towards the inside."),
             )
     }
 

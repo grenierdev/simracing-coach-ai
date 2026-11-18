@@ -202,8 +202,25 @@ Per-corner metrics, for each lap compared to the reference:
 | Throttle pickup | return above 20 % after the lowest throttle point; gap in meters (+ = later) |
 | Coasting | time with neither brake nor throttle (below 5 %) in the zone |
 | Rotation | median of `YawRate / (Speed × steering)` in the core of the corner (at least half the maximum steering angle, 15 m trimmed at each edge), before and after the minimum speed, relative to the reference. Below 1: less rotation for the same steering (understeer); above: more rotation (oversteer) |
+| Turn-in | where the steering reaches 30 % of the corner's peak; gap in meters (+ = later) |
+| Path radius | `Speed / YawRate`, smoothed over ±15 m: the tightest radius and where it is (geometric apex), and the median radius in the core; relative to the reference (below 1: tighter line) |
+| Steering | peak and mean steering-wheel angle in the corner, relative to the reference (above 1: more steering) |
+| Line | lateral offset of the line against the reference at the reference's turn-in, apex and exit (+ = towards the inside) |
 
 Rotation is only meaningful with the same car as the reference. When the reference `YawRate` is estimated (CSV without that channel), the interface says so: the ratios are then only indicative.
+
+### The line
+
+iRacing's live telemetry has no position on track. The line is rebuilt in meters:
+
+- from `Lat`/`Lon` when present (.ibt files, Garage61 references);
+- otherwise by dead reckoning: speed integrated along the heading (`Yaw`, whose sign convention is checked against `YawRate`, or `YawRate` integrated). It drifts over a lap but holds to well under a meter over the few seconds of a corner.
+
+With two GPS lines, the offsets are absolute. Otherwise (live lap against a Garage61 reference, the usual case), the lap line is aligned on the reference over the straight before the corner (150 m to 10 m before it, rotation and translation by least squares): the offsets then measure how the line departs from the reference after a common approach, not the position against the track edges.
+
+This lets the coach tell a tight line from a speed or braking problem: a smaller radius with more steering and less rotation means the line is too tight, and the advice is to open the entry and take a later apex rather than to turn in earlier. On the synthetic track, against a reference whose path is estimated from GPS, the same line measures within 10 % in radius and 0.5 m in offset; the prompts tell the coach to ignore smaller differences.
+
+When a session folder still holds an unedited `CLAUDE.md` from an earlier version, it is replaced by the new default at startup; an edited one is kept, and the new default is written next to it as `CLAUDE.default.md`.
 
 ## Claude (ACP and MCP)
 
@@ -225,8 +242,8 @@ MCP tools exposed (server `coach`, HTTP on `127.0.0.1`, ephemeral port, random B
 | Tool | Purpose |
 |---|---|
 | `get_session_overview()` | latest laps, delta to the reference, time lost per corner, ranked |
-| `get_corner_summary(corner, laps)` | metrics of one corner per lap against the reference |
-| `get_corner_trace(corner, channels, lap)` | traces (at most 100 points per channel), lap and reference |
+| `get_corner_summary(corner, laps)` | metrics of one corner per lap against the reference, including turn-in, path radius, steering and line offset |
+| `get_corner_trace(corner, channels, lap)` | traces (at most 100 points per channel), lap and reference; channels include `radius` and `line_offset` |
 | `update_plan(triggers, mode)` | replaces (`replace`) or extends (`add`) the cue plan (validated before being applied) |
 | `say(text, when, corner, anchor, offset_m, position)` | one-off sentence: `now`, `next_straight` or at a `position` (corner + anchor + offset, or absolute position); always subject to the silence-under-braking rule |
 

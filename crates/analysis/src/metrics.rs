@@ -18,6 +18,10 @@ const MIN_SPEED: f64 = 10.0;
 const CORE_TRIM_M: f64 = 15.0;
 /// Minimum number of points for a rotation median.
 const MIN_ROTATION_POINTS: usize = 5;
+/// Half-width of the smoothing window of the path curvature, m.
+const CURVATURE_SMOOTH_M: f64 = 15.0;
+/// Turn-in: first point where steering reaches this share of the corner's peak.
+const TURN_IN_SHARE: f64 = 0.3;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CornerMetrics {
@@ -48,6 +52,18 @@ pub struct CornerMetrics {
     /// same steering (understeer), higher = more rotation (oversteer).
     pub rotation_entry: Option<f64>,
     pub rotation_exit: Option<f64>,
+    /// Tightest radius of the car's path in the corner, `Speed / YawRate`
+    /// smoothed over ~30 m, m, and where it is (pct).
+    pub min_radius_m: Option<f64>,
+    pub min_radius_pct: Option<f64>,
+    /// Median path radius in the core of the corner (at least half of the
+    /// peak steering), m.
+    pub core_radius_m: Option<f64>,
+    /// Peak and mean steering-wheel angle in the corner (absolute), rad.
+    pub steering_peak: f64,
+    pub steering_mean: f64,
+    /// Turn-in point: steering reaches 30 % of the corner's peak, pct.
+    pub turn_in_pct: Option<f64>,
 }
 
 fn median(mut v: Vec<f64>) -> Option<f64> {
@@ -191,6 +207,60 @@ pub fn corner_metrics(lap: &AlignedLap, zone: &CornerZone, length_m: f64) -> Cor
         )
     };
 
+    // Path curvature |YawRate| / Speed, smoothed, over the zone.
+    let half = ((CURVATURE_SMOOTH_M / step_m).round() as usize).max(1);
+    let raw: Vec<f64> = (0..=last)
+        .map(|k| {
+            let (y, v) = (val(&lap.yaw_rate, k), val(&lap.speed, k));
+            if y.is_finite() && v > MIN_SPEED {
+                y.abs() / v
+            } else {
+                f64::NAN
+            }
+        })
+        .collect();
+    let curvature = |k: usize| {
+        let (lo, hi) = (k.saturating_sub(half), (k + half).min(last));
+        let (s, n) = (lo..=hi)
+            .map(|j| raw[j])
+            .filter(|x| x.is_finite())
+            .fold((0.0, 0usize), |(s, n), x| (s + x, n + 1));
+        (n > half).then(|| s / n as f64)
+    };
+    let tightest = (k_turn..=k_cend)
+        .filter_map(|k| curvature(k).map(|c| (k, c)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .filter(|(_, c)| *c > 1e-4);
+    let core_radius_m = median(
+        (k_turn..=k_cend)
+            .filter(|&k| val(&lap.steering, k).abs() >= steer_floor)
+            .filter_map(curvature)
+            .filter(|c| *c > 1e-4)
+            .map(|c| 1.0 / c)
+            .collect(),
+    );
+
+    // Steering: peak and mean over the corner; turn-in on the approach.
+    let steering: Vec<f64> = (k_turn..=k_cend)
+        .map(|k| val(&lap.steering, k).abs())
+        .filter(|x| x.is_finite())
+        .collect();
+    let steering_mean = if steering.is_empty() {
+        0.0
+    } else {
+        steering.iter().sum::<f64>() / steering.len() as f64
+    };
+    let peak_sign = (k_turn..=k_cend)
+        .map(|k| val(&lap.steering, k))
+        .filter(|x| x.is_finite())
+        .max_by(|a, b| a.abs().total_cmp(&b.abs()))
+        .map(f64::signum)
+        .unwrap_or(0.0);
+    let turn_in_level = MIN_STEER.max(TURN_IN_SHARE * peak_steer);
+    let turn_in = (peak_sign != 0.0)
+        .then(|| (0..=k_min).find(|&k| val(&lap.steering, k) * peak_sign >= turn_in_level))
+        .flatten();
+
     CornerMetrics {
         zone_time: lap.duration(idx[0], idx[last]),
         brake_point_pct: k_brake.map(pct),
@@ -205,5 +275,11 @@ pub fn corner_metrics(lap: &AlignedLap, zone: &CornerZone, length_m: f64) -> Cor
         peak_lat_accel,
         rotation_entry: rotation(k_turn..=k_min),
         rotation_exit: rotation(k_min..=k_cend),
+        min_radius_m: tightest.map(|(_, c)| 1.0 / c),
+        min_radius_pct: tightest.map(|(k, _)| pct(k)),
+        core_radius_m,
+        steering_peak: peak_steer,
+        steering_mean,
+        turn_in_pct: turn_in.map(pct),
     }
 }

@@ -78,6 +78,23 @@ pub fn lap_status(f: &LapFlags) -> &'static str {
     }
 }
 
+/// Ratio shown as a change: 0.88 → "−12%", 1.2 → "+20%".
+pub fn percent_change(r: Option<f64>) -> String {
+    match r {
+        Some(r) if r.is_finite() => {
+            let p = (r - 1.0) * 100.0;
+            if p.abs() < 0.5 {
+                "0%".into()
+            } else if p > 0.0 {
+                format!("+{p:.0}%")
+            } else {
+                format!("−{:.0}%", -p)
+            }
+        }
+        _ => "–".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +111,13 @@ mod tests {
         assert_eq!(delta(0.1234), "+0.123");
         assert_eq!(delta(-1.0449), "-1.045");
         assert_eq!(delta(0.0001), "±0.000");
+    }
+
+    #[test]
+    fn percent_change_formats_ratios() {
+        assert_eq!(percent_change(Some(0.88)), "−12%");
+        assert_eq!(percent_change(Some(1.2)), "+20%");
+        assert_eq!(percent_change(Some(1.001)), "0%");
+        assert_eq!(percent_change(None), "–");
     }
 }

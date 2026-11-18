@@ -206,6 +206,7 @@ pub fn from_garage61_csv(
             rpm: r[6] as f32,
             steering: r[7] as f32,
             yaw_rate: r[8] as f32,
+            yaw: f32::NAN,
             lat_accel: r[9] as f32,
             long_accel: r[10] as f32,
             lat: r[11],

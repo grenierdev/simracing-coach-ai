@@ -69,6 +69,8 @@ pub struct SyntheticTrack {
     kappa: Vec<f64>,
     x: Vec<f64>,
     y: Vec<f64>,
+    /// Heading at each step, rad.
+    heading: Vec<f64>,
 }
 
 impl SyntheticTrack {
@@ -81,9 +83,11 @@ impl SyntheticTrack {
         let (mut x, mut y, mut h) = (0.0, 0.0, 0.0f64);
         let mut xs = Vec::with_capacity(kappa.len());
         let mut ys = Vec::with_capacity(kappa.len());
+        let mut hs = Vec::with_capacity(kappa.len());
         for k in &kappa {
             xs.push(x);
             ys.push(y);
+            hs.push(h);
             h += k * DS;
             x += h.cos() * DS;
             y += h.sin() * DS;
@@ -93,6 +97,7 @@ impl SyntheticTrack {
             kappa,
             x: xs,
             y: ys,
+            heading: hs,
         }
     }
 
@@ -260,6 +265,7 @@ impl SyntheticTrack {
                 rpm: rpm as f32,
                 steering: ((kap * WHEELBASE).atan() * STEERING_RATIO) as f32,
                 yaw_rate: yaw as f32,
+                yaw: wrap_angle(self.heading[j]) as f32,
                 lat_accel: (speed * speed * kap + noise * 20.0 * rng.next_signed()) as f32,
                 long_accel: long_accel as f32,
                 lat: 48.0 + self.y[j] / 111_320.0,
@@ -310,6 +316,7 @@ impl SyntheticTrack {
                     Value::Float(s.rpm),
                     Value::Float(s.steering),
                     Value::Float(s.yaw_rate),
+                    Value::Float(s.yaw),
                     Value::Float(s.lat_accel),
                     Value::Float(s.long_accel),
                     Value::Double(s.lat),
@@ -332,6 +339,13 @@ impl SyntheticTrack {
     }
 }
 
+/// Angle in (-π, π], like iRacing's `Yaw`.
+fn wrap_angle(a: f64) -> f64 {
+    use std::f64::consts::{PI, TAU};
+    let w = a.rem_euclid(TAU);
+    if w > PI { w - TAU } else { w }
+}
+
 /// Channels written by [`SyntheticTrack::session_ibt`], iRacing names and types.
 pub const SYNTHETIC_CHANNELS: &[(&str, VarType, &str)] = &[
     ("SessionTime", VarType::Double, "s"),
@@ -349,6 +363,7 @@ pub const SYNTHETIC_CHANNELS: &[(&str, VarType, &str)] = &[
     ("RPM", VarType::Float, "revs/min"),
     ("SteeringWheelAngle", VarType::Float, "rad"),
     ("YawRate", VarType::Float, "rad/s"),
+    ("Yaw", VarType::Float, "rad"),
     ("LatAccel", VarType::Float, "m/s^2"),
     ("LongAccel", VarType::Float, "m/s^2"),
     ("Lat", VarType::Double, "deg"),

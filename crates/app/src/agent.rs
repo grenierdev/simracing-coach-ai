@@ -81,21 +81,37 @@ fn session_dir(role: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("sessions").join(role))
 }
 
-/// Reads the coach prompt; writes the default version if it does not exist.
-/// The French prompt written by v0.1.0 is replaced (and kept as a backup):
-/// the reply language is now a setting.
-fn system_prompt(dir: &std::path::Path, default: &str) -> String {
+/// Reads the coach prompt of a session folder. A missing copy, or an unedited
+/// default of an earlier version, is (re)written with the current default.
+/// A copy edited by the driver is kept; the current default is then written
+/// next to it as `CLAUDE.default.md`. The French prompt of v0.1.0 is replaced
+/// and kept as a backup.
+fn system_prompt(dir: &std::path::Path, default: &str, previous: &[&str]) -> String {
     let path = dir.join("CLAUDE.md");
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        if !text.starts_with("# Coach de pilotage") {
-            return text;
-        }
+    let mut existing = std::fs::read_to_string(&path).ok();
+    if existing
+        .as_deref()
+        .is_some_and(|t| t.starts_with("# Coach de pilotage"))
+    {
         let _ = std::fs::rename(&path, dir.join("CLAUDE.v0.1.md"));
+        existing = None;
     }
-    if std::fs::create_dir_all(dir).is_ok() {
-        let _ = std::fs::write(&path, default);
+    let _ = std::fs::create_dir_all(dir);
+    match coach::prompt_copy(existing.as_deref(), default, previous) {
+        coach::PromptCopy::WriteDefault => {
+            let _ = std::fs::write(&path, default);
+            let _ = std::fs::remove_file(dir.join("CLAUDE.default.md"));
+            default.to_string()
+        }
+        coach::PromptCopy::Keep => {
+            let _ = std::fs::write(dir.join("CLAUDE.default.md"), default);
+            tracing::info!(
+                "{}: edited prompt kept; current default in CLAUDE.default.md",
+                path.display()
+            );
+            existing.unwrap_or_else(|| default.to_string())
+        }
     }
-    default.to_string()
 }
 
 pub fn start(
@@ -162,7 +178,11 @@ pub fn start(
             disable_thinking: true,
             env: vec![],
             system_prompt: coach::with_language(
-                &system_prompt(&cwd, coach::DEFAULT_SYSTEM_PROMPT),
+                &system_prompt(
+                    &cwd,
+                    coach::DEFAULT_SYSTEM_PROMPT,
+                    coach::PREVIOUS_SYSTEM_PROMPTS,
+                ),
                 options.language.name(),
             ),
             cwd,
@@ -181,7 +201,11 @@ pub fn start(
             disable_thinking: false,
             env: vec![],
             system_prompt: coach::with_language(
-                &system_prompt(&cwd, coach::DEFAULT_ANALYSIS_PROMPT),
+                &system_prompt(
+                    &cwd,
+                    coach::DEFAULT_ANALYSIS_PROMPT,
+                    coach::PREVIOUS_ANALYSIS_PROMPTS,
+                ),
                 options.language.name(),
             ),
             cwd,

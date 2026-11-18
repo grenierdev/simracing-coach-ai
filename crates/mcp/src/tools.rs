@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use analysis::{AlignedLap, Analyzer, CornerComparison, CornerMetrics, CornerZone};
+use analysis::{AlignedLap, Analyzer, CornerComparison, CornerMetrics, CornerZone, line};
 use serde::Serialize;
 use serde_json::{Value, json};
 use telemetry::{Lap, LiveSnapshot};
@@ -101,6 +101,10 @@ struct CornerLoss {
     brake_point_m: Option<f64>,
     min_speed_kmh: Option<f64>,
     throttle_on_m: Option<f64>,
+    /// Tightest path radius relative to the reference (< 1: tighter line).
+    radius_ratio: Option<f64>,
+    /// Peak steering relative to the reference (> 1: more steering).
+    steering_ratio: Option<f64>,
 }
 
 fn mean(v: impl Iterator<Item = f64>) -> Option<f64> {
@@ -161,6 +165,8 @@ pub fn session_overview(snap: &LiveSnapshot, analyzer: Option<&Analyzer>) -> Val
                 brake_point_m: mean(cs.iter().filter_map(|c| c.brake_point_delta_m)).and_then(r1),
                 min_speed_kmh: mean(cs.iter().map(|c| c.min_speed_delta * 3.6)).and_then(r1),
                 throttle_on_m: mean(cs.iter().filter_map(|c| c.throttle_on_delta_m)).and_then(r1),
+                radius_ratio: mean(cs.iter().filter_map(|c| c.min_radius_ratio)).and_then(r2),
+                steering_ratio: mean(cs.iter().filter_map(|c| c.steering_peak_ratio)).and_then(r2),
             }
         })
         .collect();
@@ -168,7 +174,7 @@ pub fn session_overview(snap: &LiveSnapshot, analyzer: Option<&Analyzer>) -> Val
     out["analyzed_laps"] = json!(comps.iter().map(|c| c.lap_number).collect::<Vec<_>>());
     out["time_lost_by_corner"] = json!(losses);
     out["conventions"] = json!(
-        "loss_s > 0: time lost; brake_point_m and throttle_on_m > 0: later than the reference; min_speed_kmh < 0: slower"
+        "loss_s > 0: time lost; brake_point_m and throttle_on_m > 0: later than the reference; min_speed_kmh < 0: slower; radius_ratio < 1: tighter line than the reference; steering_ratio > 1: more steering"
     );
     out
 }
@@ -192,6 +198,12 @@ fn metrics_json(m: &CornerMetrics, length_m: f64, corner_start: f64) -> Value {
         "peak_lat_g": r2(m.peak_lat_accel / 9.81),
         "rotation_entry": r3(m.rotation_entry.unwrap_or(f64::NAN)),
         "rotation_exit": r3(m.rotation_exit.unwrap_or(f64::NAN)),
+        "turn_in_m": pos(m.turn_in_pct),
+        "min_radius_m": m.min_radius_m.and_then(r1),
+        "tightest_point_m": pos(m.min_radius_pct),
+        "core_radius_m": m.core_radius_m.and_then(r1),
+        "steering_peak_deg": r1(m.steering_peak.to_degrees()),
+        "steering_mean_deg": r1(m.steering_mean.to_degrees()),
     })
 }
 
@@ -224,6 +236,18 @@ pub fn corner_summary(
                 "throttle_on_delta_m": cc.throttle_on_delta_m.and_then(r1),
                 "rotation_ratio_entry": cc.rotation_entry_ratio.and_then(r2),
                 "rotation_ratio_exit": cc.rotation_exit_ratio.and_then(r2),
+                "turn_in_delta_m": cc.turn_in_delta_m.and_then(r1),
+                "min_radius_ratio": cc.min_radius_ratio.and_then(r2),
+                "core_radius_ratio": cc.core_radius_ratio.and_then(r2),
+                "tightest_point_delta_m": cc.tightest_point_delta_m.and_then(r1),
+                "steering_peak_ratio": cc.steering_peak_ratio.and_then(r2),
+                "steering_mean_ratio": cc.steering_mean_ratio.and_then(r2),
+                "line_offset_m": cc.line.map(|o| json!({
+                    "turn_in": r1(o.turn_in_m),
+                    "apex": r1(o.apex_m),
+                    "exit": r1(o.exit_m),
+                    "basis": if o.absolute { "absolute (GPS)" } else { "relative to the approach line" },
+                })),
                 "metrics": metrics_json(&cc.lap, l, c.start_pct),
             })
         })
@@ -235,7 +259,7 @@ pub fn corner_summary(
         "length_m": r1(c.length_m),
         "reference": metrics_json(&a.reference_metrics[i], l, c.start_pct),
         "laps": per_lap,
-        "conventions": "positions in m from the corner entry (negative = before); deltas > 0: later; rotation ratio < 1: less rotation than the reference for the same steering (understeer)",
+        "conventions": "positions in m from the corner entry (negative = before); deltas > 0: later; rotation ratio < 1: less rotation than the reference for the same steering (understeer); min_radius_ratio and core_radius_ratio < 1: tighter path than the reference; steering ratios > 1: more steering; line_offset_m > 0: towards the inside of the corner (turn_in and apex at the reference's points). With basis \"relative to the approach line\", both lines are made to coincide on the straight before the corner, so a constant offset on the approach is not visible.",
     }))
 }
 
@@ -249,7 +273,39 @@ pub const TRACE_CHANNELS: &[&str] = &[
     "lat_accel",
     "gear",
     "delta",
+    "radius",
+    "line_offset",
 ];
+
+/// Path radius `Speed / |YawRate|`, m, smoothed over ±`half` points; `NaN`
+/// on straights and at low speed.
+fn radius(lap: &AlignedLap, half: usize) -> Vec<f64> {
+    let n = lap.n;
+    let k: Vec<f64> = (0..n)
+        .map(|i| {
+            let (v, y) = (lap.speed[i], lap.yaw_rate[i]);
+            if v > 10.0 && y.is_finite() {
+                y.abs() / v
+            } else {
+                f64::NAN
+            }
+        })
+        .collect();
+    (0..n)
+        .map(|i| {
+            let (s, c) = (0..=2 * half)
+                .map(|j| k[(i + n + j - half) % n])
+                .filter(|x| x.is_finite())
+                .fold((0.0, 0usize), |(s, c), x| (s + x, c + 1));
+            let mean = if c > half { s / c as f64 } else { f64::NAN };
+            if mean > 1.0 / 2000.0 {
+                1.0 / mean
+            } else {
+                f64::NAN
+            }
+        })
+        .collect()
+}
 
 fn channel_values(lap: &AlignedLap, name: &str) -> Option<Vec<f64>> {
     let scale = |v: &[f64], k: f64| v.iter().map(|x| x * k).collect();
@@ -261,6 +317,7 @@ fn channel_values(lap: &AlignedLap, name: &str) -> Option<Vec<f64>> {
         "yaw_rate" => scale(&lap.yaw_rate, 180.0 / std::f64::consts::PI),
         "lat_accel" => scale(&lap.lat_accel, 1.0 / 9.81),
         "gear" => lap.gear.clone(),
+        "radius" => radius(lap, 6),
         _ => return None,
     })
 }
@@ -324,7 +381,16 @@ pub fn corner_trace(
         .collect();
     let mut series = serde_json::Map::new();
     for ch in &channels {
-        let (mine, refv): (Vec<Option<f64>>, Vec<Option<f64>>) = if *ch == "delta" {
+        let (mine, refv): (Vec<Option<f64>>, Vec<Option<f64>>) = if *ch == "line_offset" {
+            let offsets = match (&aligned.line, &a.reference.line) {
+                (Some(m), Some(r)) => {
+                    line::inside_offsets(m, r, &a.model.corners[i], &picks, l).map(|(_, o)| o)
+                }
+                _ => None,
+            }
+            .ok_or_else(|| ToolError("no line available for this lap or the reference".into()))?;
+            (offsets.into_iter().map(r1).collect(), vec![])
+        } else if *ch == "delta" {
             // Cumulative delta from the zone entry, s.
             let t0 = aligned.time[idx[0]] - a.reference.time[idx[0]];
             (
@@ -354,7 +420,7 @@ pub fn corner_trace(
         "lap": lap.number,
         "points": picks.len(),
         "distance_m": dist,
-        "units": "speed km/h, throttle and brake %, steering deg, yaw_rate deg/s, lat_accel g, delta s; distance from the corner entry",
+        "units": "speed km/h, throttle and brake %, steering deg, yaw_rate deg/s, lat_accel g, delta s, radius m (path radius, null on straights), line_offset m (> 0: inside of the reference line); distance from the corner entry",
         "channels": series,
     }))
 }
@@ -457,5 +523,48 @@ mod tests {
         // Reasonable size for a tool call.
         assert!(v.to_string().len() < 8000, "{} bytes", v.to_string().len());
         assert!(corner_trace(&snap, Some(&a), "T1", &["oil".into()], None).is_err());
+    }
+
+    #[test]
+    fn corner_summary_reports_radius_steering_and_line() {
+        let (snap, a) = fixture();
+        let v = corner_summary(&snap, Some(&a), "T4", Some(&[1])).unwrap();
+        let r = &v["reference"];
+        // T4: 40 m hairpin.
+        let radius = r["min_radius_m"].as_f64().unwrap();
+        assert!((radius - 40.0).abs() < 4.0, "{radius}");
+        assert!(r["steering_peak_deg"].as_f64().unwrap() > 10.0);
+        assert!(r["turn_in_m"].as_f64().is_some());
+        let lap = &v["laps"][0];
+        // Same line, a bit slower: same radius and steering, no offset.
+        assert!((lap["min_radius_ratio"].as_f64().unwrap() - 1.0).abs() < 0.05);
+        assert!((lap["steering_peak_ratio"].as_f64().unwrap() - 1.0).abs() < 0.05);
+        let line = &lap["line_offset_m"];
+        assert_eq!(line["basis"], "absolute (GPS)");
+        assert!(line["apex"].as_f64().unwrap().abs() < 1.0, "{line}");
+        let o = session_overview(&snap, Some(&a));
+        assert!(
+            o["time_lost_by_corner"][0]["radius_ratio"]
+                .as_f64()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn trace_has_radius_and_line_offset() {
+        let (snap, a) = fixture();
+        let chans = vec!["radius".to_string(), "line_offset".to_string()];
+        let v = corner_trace(&snap, Some(&a), "T4", &chans, Some(1)).unwrap();
+        let radius: Vec<f64> = v["channels"]["radius"]["reference"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x.as_f64())
+            .collect();
+        let min = radius.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!((min - 40.0).abs() < 4.0, "{min}");
+        let offsets = v["channels"]["line_offset"]["lap"].as_array().unwrap();
+        assert_eq!(offsets.len(), v["points"].as_u64().unwrap() as usize);
+        assert!(v["channels"]["line_offset"].get("reference").is_none());
     }
 }

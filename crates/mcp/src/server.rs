@@ -42,7 +42,9 @@ pub struct CornerSummaryArgs {
 pub struct CornerTraceArgs {
     /// Corner: "T5" (or "5").
     pub corner: String,
-    /// Channels: speed, throttle, brake, steering, yaw_rate, lat_accel, gear, delta.
+    /// Channels: speed, throttle, brake, steering, yaw_rate, lat_accel, gear,
+    /// delta, radius (path radius), line_offset (lateral offset of the line
+    /// against the reference, > 0 = inside).
     /// Default: speed, throttle, brake.
     #[serde(default)]
     pub channels: Vec<String>,
@@ -152,7 +154,7 @@ impl CoachMcp {
     }
 
     #[tool(
-        description = "Corner metrics against the reference, per lap: time lost, braking point, trail braking, minimum speed, throttle pickup, coasting, lateral acceleration, rotation ratios (entry and exit)."
+        description = "Corner metrics against the reference, per lap: time lost, braking point, trail braking, minimum speed, throttle pickup, coasting, lateral acceleration, rotation ratios (entry and exit), turn-in point, path radius (tightest and in the core), steering angle (peak and mean), and the line's lateral offset at turn-in, apex and exit."
     )]
     async fn get_corner_summary(
         &self,

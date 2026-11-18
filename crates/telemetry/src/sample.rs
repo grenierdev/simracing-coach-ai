@@ -69,6 +69,9 @@ pub struct Sample {
     pub steering: f32,
     /// `YawRate`, rad/s.
     pub yaw_rate: f32,
+    /// `Yaw`: heading, rad. Used to rebuild the car's path when `Lat`/`Lon`
+    /// are missing (live telemetry).
+    pub yaw: f32,
     /// `LatAccel`, m/s².
     pub lat_accel: f32,
     /// `LongAccel`, m/s².
@@ -104,6 +107,7 @@ pub struct ChannelMap {
     rpm: Option<VarHeader>,
     steering: Option<VarHeader>,
     yaw_rate: Option<VarHeader>,
+    yaw: Option<VarHeader>,
     lat_accel: Option<VarHeader>,
     long_accel: Option<VarHeader>,
     lat: Option<VarHeader>,
@@ -135,6 +139,7 @@ impl ChannelMap {
             rpm: g(&["RPM"]),
             steering: g(&["SteeringWheelAngle"]),
             yaw_rate: g(&["YawRate"]),
+            yaw: g(&["Yaw"]),
             lat_accel: g(&["LatAccel"]),
             long_accel: g(&["LongAccel"]),
             lat: g(&["Lat"]),
@@ -188,6 +193,7 @@ impl ChannelMap {
             rpm: f(&self.rpm) as f32,
             steering: f(&self.steering) as f32,
             yaw_rate: f(&self.yaw_rate) as f32,
+            yaw: f(&self.yaw) as f32,
             lat_accel: f(&self.lat_accel) as f32,
             long_accel: f(&self.long_accel) as f32,
             lat: f(&self.lat),

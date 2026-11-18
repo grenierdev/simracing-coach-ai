@@ -17,6 +17,8 @@ pub struct AlignedLap {
     pub yaw_rate: Vec<f64>,
     pub lat_accel: Vec<f64>,
     pub gear: Vec<f64>,
+    /// The car's path on the same grid (GPS or dead reckoning), if it can be rebuilt.
+    pub line: Option<crate::line::LinePath>,
 }
 
 /// Grid size: about one point per meter, bounded.
@@ -72,6 +74,7 @@ impl AlignedLap {
             yaw_rate: ch(|x| x.yaw_rate as f64),
             lat_accel: ch(|x| x.lat_accel as f64),
             gear: ch(|x| x.gear as f64),
+            line: crate::line::line_path(s, n),
         }
     }
 

@@ -44,6 +44,38 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/CLAUDE.md");
 /// System prompt of the analysis session (planning the next lap).
 pub const DEFAULT_ANALYSIS_PROMPT: &str = include_str!("../prompts/ANALYSIS.md");
 
+/// Defaults shipped by earlier versions (v0.2.0 to v0.3.0): a session copy
+/// identical to one of them was not edited by the driver and is upgraded.
+pub const PREVIOUS_SYSTEM_PROMPTS: &[&str] = &[include_str!("../prompts/previous/CLAUDE-0.2.md")];
+pub const PREVIOUS_ANALYSIS_PROMPTS: &[&str] =
+    &[include_str!("../prompts/previous/ANALYSIS-0.2.md")];
+
+/// What to do with the prompt copy of a session folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptCopy {
+    /// Missing or an unedited earlier default: (re)write the current default.
+    WriteDefault,
+    /// Edited by the driver: keep it.
+    Keep,
+}
+
+/// Decides whether a session's `CLAUDE.md` copy is replaced by `default`.
+/// Line endings are ignored (the file may have been saved on Windows).
+pub fn prompt_copy(existing: Option<&str>, default: &str, previous: &[&str]) -> PromptCopy {
+    let norm = |s: &str| s.replace("\r\n", "\n").trim().to_string();
+    match existing {
+        None => PromptCopy::WriteDefault,
+        Some(text) => {
+            let t = norm(text);
+            if t == norm(default) || previous.iter().any(|p| norm(p) == t) {
+                PromptCopy::WriteDefault
+            } else {
+                PromptCopy::Keep
+            }
+        }
+    }
+}
+
 /// Appends the reply-language instruction to a system prompt. `language` is
 /// the English name of the voice language ("French").
 pub fn with_language(prompt: &str, language: &str) -> String {
@@ -481,6 +513,35 @@ async fn run(
         Ok(()) => AgentStatus::Stopped,
         Err(e) => AgentStatus::Failed(e.to_string()),
     }));
+}
+
+#[cfg(test)]
+mod prompt_copy_tests {
+    use super::*;
+
+    #[test]
+    fn unedited_old_defaults_are_upgraded_and_edits_kept() {
+        assert_eq!(
+            prompt_copy(None, DEFAULT_SYSTEM_PROMPT, PREVIOUS_SYSTEM_PROMPTS),
+            PromptCopy::WriteDefault
+        );
+        let old = PREVIOUS_SYSTEM_PROMPTS[0].replace('\n', "\r\n");
+        assert_eq!(
+            prompt_copy(Some(&old), DEFAULT_SYSTEM_PROMPT, PREVIOUS_SYSTEM_PROMPTS),
+            PromptCopy::WriteDefault
+        );
+        let edited = format!("{}\nAlways call me Mike.", PREVIOUS_SYSTEM_PROMPTS[0]);
+        assert_eq!(
+            prompt_copy(
+                Some(&edited),
+                DEFAULT_SYSTEM_PROMPT,
+                PREVIOUS_SYSTEM_PROMPTS
+            ),
+            PromptCopy::Keep
+        );
+        assert_ne!(DEFAULT_SYSTEM_PROMPT, PREVIOUS_SYSTEM_PROMPTS[0]);
+        assert_ne!(DEFAULT_ANALYSIS_PROMPT, PREVIOUS_ANALYSIS_PROMPTS[0]);
+    }
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@
 //! that numbering stays stable from one lap to the next.
 
 pub mod align;
+pub mod line;
 pub mod metrics;
 pub mod zones;
 
@@ -43,6 +44,19 @@ pub struct CornerComparison {
     /// Rotation per unit of steering relative to the reference (< 1: less rotation).
     pub rotation_entry_ratio: Option<f64>,
     pub rotation_exit_ratio: Option<f64>,
+    /// Turn-in later (+) or earlier (−) than the reference, m.
+    pub turn_in_delta_m: Option<f64>,
+    /// Tightest path radius relative to the reference (< 1: tighter line).
+    pub min_radius_ratio: Option<f64>,
+    /// Median radius in the core of the corner relative to the reference.
+    pub core_radius_ratio: Option<f64>,
+    /// Tightest point (geometric apex) later (+) or earlier (−), m.
+    pub tightest_point_delta_m: Option<f64>,
+    /// Steering relative to the reference (> 1: more steering).
+    pub steering_peak_ratio: Option<f64>,
+    pub steering_mean_ratio: Option<f64>,
+    /// Lateral offset of the line against the reference.
+    pub line: Option<line::LineComparison>,
 }
 
 impl CornerComparison {
@@ -129,6 +143,11 @@ impl Analyzer {
     /// Compares a complete lap to the reference.
     pub fn compare(&self, lap: &Lap) -> LapComparison {
         let aligned = AlignedLap::new(lap, self.reference.n);
+        self.compare_aligned(&aligned, lap.number)
+    }
+
+    /// Same as [`Analyzer::compare`] for a lap already aligned on the grid.
+    pub fn compare_aligned(&self, aligned: &AlignedLap, lap_number: i32) -> LapComparison {
         let l = self.model.length_m;
         let corners = self
             .model
@@ -136,7 +155,19 @@ impl Analyzer {
             .iter()
             .zip(&self.reference_metrics)
             .map(|(zone, r)| {
-                let m = corner_metrics(&aligned, zone, l);
+                let m = corner_metrics(aligned, zone, l);
+                let steer = |a: f64, b: f64| (b > 0.03).then(|| a / b);
+                let line = match (&aligned.line, &self.reference.line) {
+                    (Some(lap_line), Some(ref_line)) => line::compare_line(
+                        lap_line,
+                        ref_line,
+                        zone,
+                        r.turn_in_pct.unwrap_or(zone.corner.start_pct),
+                        r.min_radius_pct.unwrap_or(r.min_speed_pct),
+                        l,
+                    ),
+                    _ => None,
+                };
                 let pos_delta = |a: Option<f64>, b: Option<f64>| match (a, b) {
                     (Some(a), Some(b)) => Some(signed_m(a, b, l)),
                     _ => None,
@@ -149,14 +180,21 @@ impl Analyzer {
                     throttle_on_delta_m: pos_delta(m.throttle_on_pct, r.throttle_on_pct),
                     rotation_entry_ratio: ratio(m.rotation_entry, r.rotation_entry),
                     rotation_exit_ratio: ratio(m.rotation_exit, r.rotation_exit),
+                    turn_in_delta_m: pos_delta(m.turn_in_pct, r.turn_in_pct),
+                    min_radius_ratio: ratio(m.min_radius_m, r.min_radius_m),
+                    core_radius_ratio: ratio(m.core_radius_m, r.core_radius_m),
+                    tightest_point_delta_m: pos_delta(m.min_radius_pct, r.min_radius_pct),
+                    steering_peak_ratio: steer(m.steering_peak, r.steering_peak),
+                    steering_mean_ratio: steer(m.steering_mean, r.steering_mean),
+                    line,
                     lap: m,
                     reference: r.clone(),
                 }
             })
             .collect();
         LapComparison {
-            lap_number: lap.number,
-            lap_time: lap.lap_time,
+            lap_number,
+            lap_time: aligned.lap_time,
             reference_time: self.reference.lap_time,
             corners,
         }
@@ -325,6 +363,91 @@ mod tests {
         assert!(!ratios.is_empty());
         for (label, ratio) in ratios {
             assert!((ratio - 1.0).abs() < 0.1, "{label}: {ratio}");
+        }
+        // Same line: the GPS-estimated path radius stays within the
+        // tolerance given to the coach (10 %), and the lines coincide.
+        for c in &cmp.corners {
+            let (min, core) = (c.min_radius_ratio.unwrap(), c.core_radius_ratio.unwrap());
+            assert!((min - 1.0).abs() < 0.1, "{}: min radius {min}", c.label());
+            assert!(
+                (core - 1.0).abs() < 0.07,
+                "{}: core radius {core}",
+                c.label()
+            );
+            let line = c.line.unwrap();
+            for o in [line.turn_in_m, line.apex_m, line.exit_m] {
+                assert!(o.abs() < 0.5, "{}: {line:?}", c.label());
+            }
+        }
+    }
+
+    #[test]
+    fn path_radius_steering_and_line_against_itself() {
+        let (track, a, lap) = setup(1.0);
+        let cmp = a.compare(&lap);
+        // Demo radii: 60, 120, 120, 40, 170, 80 m.
+        let radii = [60.0, 120.0, 120.0, 40.0, 170.0, 80.0];
+        for (c, r) in cmp.corners.iter().zip(radii) {
+            let m = c.reference.min_radius_m.unwrap();
+            assert!((m - r).abs() < 0.1 * r, "{}: {m} m vs {r}", c.label());
+            assert!(
+                (c.min_radius_ratio.unwrap() - 1.0).abs() < 0.02,
+                "{}",
+                c.label()
+            );
+            assert!((c.steering_peak_ratio.unwrap() - 1.0).abs() < 0.02);
+            assert!(c.turn_in_delta_m.unwrap().abs() < 3.0, "{}", c.label());
+            assert!(
+                c.tightest_point_delta_m.unwrap().abs() < 15.0,
+                "{}",
+                c.label()
+            );
+            let line = c.line.unwrap();
+            assert!(line.absolute, "both from GPS");
+            for o in [line.turn_in_m, line.apex_m, line.exit_m] {
+                assert!(o.abs() < 0.5, "{}: {line:?}", c.label());
+            }
+        }
+        let _ = track;
+    }
+
+    #[test]
+    fn live_lap_without_gps_is_aligned_on_the_reference_line() {
+        let (_, a, mut lap) = setup(1.0);
+        for s in &mut lap.samples {
+            s.lat = f64::NAN;
+            s.lon = f64::NAN;
+        }
+        let cmp = a.compare(&lap);
+        for c in &cmp.corners {
+            let line = c.line.unwrap();
+            assert!(!line.absolute);
+            for o in [line.turn_in_m, line.apex_m, line.exit_m] {
+                assert!(o.abs() < 1.0, "{}: {line:?}", c.label());
+            }
+        }
+    }
+
+    #[test]
+    fn more_steering_is_measured_against_the_reference() {
+        let (_, a, mut lap) = setup(1.0);
+        for s in &mut lap.samples {
+            s.steering *= 1.3;
+        }
+        let cmp = a.compare(&lap);
+        for c in &cmp.corners {
+            assert!(
+                (c.steering_peak_ratio.unwrap() - 1.3).abs() < 0.02,
+                "{}",
+                c.label()
+            );
+            assert!(
+                (c.steering_mean_ratio.unwrap() - 1.3).abs() < 0.02,
+                "{}",
+                c.label()
+            );
+            // Same path: same radius.
+            assert!((c.min_radius_ratio.unwrap() - 1.0).abs() < 0.02);
         }
     }
 
