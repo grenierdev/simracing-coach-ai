@@ -369,7 +369,14 @@ mod platform {
     /// shadow; rounded corners (Windows 11) are turned off as well.
     #[cfg(windows)]
     pub fn plain_popup(window: &Window) -> Result<(), String> {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        plain(window)
+    }
+
+    /// Generic over the handle: `gpui::Window` has its own `window_handle()`
+    /// (GPUI's handle), which hides the `raw-window-handle` trait method.
+    #[cfg(windows)]
+    fn plain(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), String> {
+        use raw_window_handle::RawWindowHandle;
         use windows::Win32::Foundation::HWND;
         use windows::Win32::Graphics::Dwm::{
             DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE,
