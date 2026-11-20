@@ -1,5 +1,6 @@
-//! Coaching screen: compact, meant to stay on top of the game. Coach state,
-//! voice levels, reference, live delta, per-corner deltas and cues.
+//! Coaching screen: coach state, voice levels, focus corners, reference, live
+//! delta, per-corner deltas and cues. The small window kept on top of the game
+//! while driving is the [`crate::widget`].
 
 use analysis::CornerComparison;
 use gpui::{Context, FontWeight, div, prelude::*, px};
@@ -18,6 +19,7 @@ impl CoachView {
             .min_h_0()
             .gap_2()
             .child(self.render_coach_state())
+            .children(self.render_focus(cx))
             .child(self.render_reference_bar(cx))
             .child(self.render_live_strip())
             .child(self.render_compact_corners())
@@ -46,6 +48,66 @@ impl CoachView {
                     .child(wave("Coach", &self.coach_wave, theme::OK))
                     .child(wave("Mic", &self.mic_wave, theme::ERR)),
             )
+    }
+
+    /// Focus coaching: the corners worked on, the latest attempts, and the
+    /// button to move on.
+    pub(crate) fn render_focus(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let st = self.planner.as_ref()?.status();
+        let line = st.focus.line()?;
+        let practicing = st.focus.phase == mcp::FocusPhase::Practicing;
+        let tone = if practicing {
+            theme::TEXT
+        } else {
+            theme::MUTED
+        };
+        let attempts = st.focus.attempts.iter().rev().take(6).rev().map(|a| {
+            let tone = if a.off_track {
+                theme::MUTED
+            } else {
+                delta_color(a.loss_s)
+            };
+            div()
+                .px_1()
+                .rounded_sm()
+                .bg(color(theme::BORDER))
+                .text_xs()
+                .text_color(color(tone))
+                .child(format::delta(a.loss_s))
+        });
+        Some(
+            panel("Focus")
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(color(tone))
+                                .child(line),
+                        )
+                        .when(practicing, |d| {
+                            d.child(button("focus-next", "Next").on_click(cx.listener(
+                                |view, _, _, cx| {
+                                    if let Some(p) = &view.planner {
+                                        p.next_focus();
+                                    }
+                                    cx.notify();
+                                },
+                            )))
+                        }),
+                )
+                .when(practicing, |d| {
+                    d.child(div().flex().flex_wrap().gap_1().children(attempts))
+                }),
+        )
     }
 
     /// Reference in one line, with the quick load button.
@@ -95,12 +157,7 @@ impl CoachView {
             .sample
             .map(|x| format!("{:.0}%", x.lap_dist_pct * 100.0))
             .unwrap_or_else(|| "–".into());
-        let live_delta = match (self.ready_reference(), s.sample, s.current_lap_elapsed) {
-            (Some(r), Some(smp), Some(el)) if s.current_lap_flags.is_some_and(|f| f.complete) => {
-                Some(r.analyzer.live_delta(smp.lap_dist_pct as f64, el))
-            }
-            _ => None,
-        };
+        let live_delta = self.live_delta();
         let last = self.comparisons.last.as_ref().map(|l| l.total_delta());
         div()
             .flex()
@@ -265,7 +322,14 @@ impl CoachView {
                     .corner
                     .clone()
                     .unwrap_or_else(|| format!("{:.0}%", v.trigger.at_pct * 100.0));
-                let tone = if v.state == TriggerState::Queued {
+                let fits = st
+                    .fits
+                    .iter()
+                    .find(|f| f.id == v.trigger.id)
+                    .is_none_or(|f| f.fits());
+                let tone = if !fits {
+                    theme::ERR
+                } else if v.state == TriggerState::Queued {
                     theme::WARN
                 } else {
                     theme::TEXT
@@ -323,14 +387,14 @@ impl CoachView {
         });
         let analysis = self.planner.as_ref().and_then(|p| {
             let st = p.status();
-            st.last.map(|(lap, summary, _)| {
+            st.last.map(|last| {
                 div()
                     .text_xs()
                     .text_color(color(theme::MUTED))
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(format!("Analysis lap {lap}: {summary}"))
+                    .child(format!("{}: {}", last.title, last.text))
             })
         });
         panel("Cues")

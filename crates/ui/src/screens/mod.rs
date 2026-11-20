@@ -7,7 +7,7 @@ mod setup;
 use gpui::{Context, div, prelude::*};
 
 use crate::widgets::*;
-use crate::{CoachView, Screen, platform};
+use crate::{CoachView, Screen};
 
 impl CoachView {
     pub(crate) fn render_tabs(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -29,14 +29,18 @@ impl CoachView {
                     cx.notify();
                 }))
         };
-        let pin = platform::SUPPORTED.then(|| {
-            button("pin", if self.pinned { "Unpin" } else { "Pin on top" }).on_click(cx.listener(
-                |view, _, window, cx| {
-                    view.toggle_pin(window);
-                    cx.notify();
-                },
-            ))
-        });
+        let widget = button(
+            "widget",
+            if self.widget_open() {
+                "Close widget"
+            } else {
+                "Widget"
+            },
+        )
+        .on_click(cx.listener(|view, _, _, cx| {
+            view.toggle_widget(cx);
+            cx.notify();
+        }));
         div()
             .flex()
             .items_center()
@@ -45,6 +49,6 @@ impl CoachView {
             .child(tab("tab-chat", "Chat", Screen::Chat))
             .child(tab("tab-setup", "Setup", Screen::Setup))
             .child(div().flex_1())
-            .children(pin)
+            .child(widget)
     }
 }

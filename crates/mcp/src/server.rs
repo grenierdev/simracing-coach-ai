@@ -18,8 +18,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use triggers::{Plan, SayWhen, TrackContext, TriggerSpec, resolve};
 
-use crate::CoachData;
 use crate::tools::{self, ToolError};
+use crate::{CoachData, FocusCommand};
 
 /// Server name in `mcpServers`: Claude sees the tools as `mcp__coach__<tool>`.
 pub const SERVER_NAME: &str = "coach";
@@ -70,6 +70,23 @@ pub struct UpdatePlanArgs {
     /// "replace" or "add" (default).
     #[serde(default)]
     pub mode: PlanMode,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetFocusArgs {
+    /// One corner, or two consecutive corners: ["T5"] or ["T5", "T6"].
+    pub corners: Vec<String>,
+    /// Short sentence telling the driver what to work on, spoken on the next
+    /// straight ("Let's work on turns five and six: the exit of five sets up six.").
+    #[serde(default)]
+    pub announcement: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NextFocusArgs {
+    /// Why: "the driver asked", "gap closed", "no more progress".
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, Default, PartialEq, Eq)]
@@ -144,7 +161,10 @@ impl CoachMcp {
     async fn get_session_overview(&self) -> Result<CallToolResult, ErrorData> {
         let t = Instant::now();
         let a = self.data.analyzer();
-        let v = tools::session_overview(&self.data.snapshot(), a.as_deref());
+        let mut v = tools::session_overview(&self.data.snapshot(), a.as_deref());
+        if let Some(focus) = self.data.focus() {
+            v["focus"] = json!(focus.status());
+        }
         self.data.tool_called(
             "get_session_overview",
             true,
@@ -222,19 +242,29 @@ impl CoachMcp {
         );
         match result {
             Ok(resolved) => {
+                let fits = analyzer
+                    .as_deref()
+                    .map(|a| triggers::check_fit(&resolved, a, &plan.settings))
+                    .unwrap_or_default();
                 let summary: Vec<Value> = resolved
                     .iter()
                     .map(|t| {
+                        let fit = fits.iter().find(|f| f.id == t.id);
                         json!({
                             "id": t.id,
                             "corner": t.corner,
                             "position_pct": (t.at_pct * 1000.0).round() / 10.0,
                             "text": t.text,
+                            "speech_s": fit.map(|f| (f.needed_s * 10.0).round() / 10.0),
+                            "room_s": fit
+                                .filter(|f| f.room_s.is_finite())
+                                .map(|f| (f.room_s * 10.0).round() / 10.0),
                         })
                     })
                     .collect();
+                let warnings: Vec<String> = fits.iter().filter_map(|f| f.problem()).collect();
                 self.data.apply_coach_plan(plan);
-                ok_json(json!({ "active_triggers": summary }))
+                ok_json(json!({ "active_triggers": summary, "warnings": warnings }))
             }
             Err(e) => tool_err(ToolError(format!("plan rejected: {e}"))),
         }
@@ -280,6 +310,83 @@ impl CoachMcp {
         self.data
             .tool_called("say", true, t.elapsed().as_secs_f64() * 1e3);
         ok_json(json!({ "scheduled": true }))
+    }
+
+    #[tool(
+        description = "Sets the corners the driver works on now: one corner, or two consecutive corners. From then on, every pass through them is analyzed as soon as the car leaves the last one, and you receive the result. The announcement is spoken to the driver on the next straight."
+    )]
+    async fn set_focus(
+        &self,
+        Parameters(args): Parameters<SetFocusArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let t = Instant::now();
+        let r = self.set_focus_inner(args);
+        self.data
+            .tool_called("set_focus", r.is_ok(), t.elapsed().as_secs_f64() * 1e3);
+        r.map_or_else(tool_err, ok_json)
+    }
+
+    #[tool(
+        description = "Leaves the current focus corners and moves on to the next finding: call it when the driver asks to work on something else, or when the corners have nothing more to give. A new choice of corners follows."
+    )]
+    async fn next_focus(
+        &self,
+        Parameters(args): Parameters<NextFocusArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let t = Instant::now();
+        let r = match self.data.focus() {
+            None => Err(ToolError(
+                "focus coaching is not running (automatic planning off)".into(),
+            )),
+            Some(f) => {
+                let reason = args.reason.unwrap_or_else(|| "moving on".into());
+                f.commands
+                    .send(FocusCommand::Next { reason })
+                    .map(|_| json!({ "ok": true }))
+                    .map_err(|_| ToolError("focus coaching stopped".into()))
+            }
+        };
+        self.data
+            .tool_called("next_focus", r.is_ok(), t.elapsed().as_secs_f64() * 1e3);
+        r.map_or_else(tool_err, ok_json)
+    }
+}
+
+impl CoachMcp {
+    fn set_focus_inner(&self, args: SetFocusArgs) -> Result<Value, ToolError> {
+        let focus = self.data.focus().ok_or_else(|| {
+            ToolError("focus coaching is not running (automatic planning off)".into())
+        })?;
+        let analyzer = self
+            .data
+            .analyzer()
+            .ok_or_else(|| ToolError("no reference lap loaded".into()))?;
+        if args.corners.is_empty() || args.corners.len() > 2 {
+            return Err(ToolError("give one or two corners".into()));
+        }
+        let mut idx = args
+            .corners
+            .iter()
+            .map(|c| tools::find_corner(&analyzer, c))
+            .collect::<Result<Vec<_>, _>>()?;
+        idx.sort_unstable();
+        idx.dedup();
+        let labels: Vec<String> = idx
+            .iter()
+            .map(|&i| analyzer.model.corners[i].label())
+            .collect();
+        let announcement = args
+            .announcement
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty());
+        focus
+            .commands
+            .send(FocusCommand::Set {
+                corners: idx,
+                announcement,
+            })
+            .map_err(|_| ToolError("focus coaching stopped".into()))?;
+        Ok(json!({ "focus": labels }))
     }
 }
 

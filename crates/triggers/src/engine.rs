@@ -12,11 +12,10 @@
 use telemetry::Sample;
 
 use crate::plan::{QuietZone, Repeat, Trigger};
+use crate::timing::{FIT_MARGIN_S, TimeProfile};
 
 /// Brake pressure above which the driver is considered to be braking.
 pub const BRAKE_SILENCE: f32 = 0.05;
-/// Safety margin between the end of a sentence and the quiet zone, s.
-const FIT_MARGIN_S: f64 = 0.4;
 /// Position jump beyond which a position is not considered crossed
 /// (teleport, reset).
 const MAX_STEP_PCT: f64 = 0.05;
@@ -91,6 +90,8 @@ pub struct TriggerEngine {
     /// Injected triggers to arm on the next sample.
     to_arm: Vec<usize>,
     stop_sent: bool,
+    /// Reference timing: speaking time left before the next quiet zone.
+    profile: Option<TimeProfile>,
 }
 
 fn forward(a: f64, b: f64) -> f64 {
@@ -123,19 +124,27 @@ impl TriggerEngine {
             prev: None,
             to_arm: vec![],
             stop_sent: false,
+            profile: None,
         }
     }
 
+    /// Measures the time left before a quiet zone on the reference lap rather
+    /// than from the current speed alone.
+    pub fn set_time_profile(&mut self, profile: TimeProfile) {
+        self.profile = Some(profile);
+    }
+
     /// Carries over the state of unchanged triggers from a previous engine (same
-    /// id, same text, same position): an updated plan does not repeat a "once"
-    /// trigger already spoken, nor restart its expiry.
+    /// id, same text): an updated plan does not repeat a "once" trigger already
+    /// spoken, nor restart its expiry. The position is not compared: adding a
+    /// cue on the same straight can move the others to make room.
     pub fn carry_state_from(&mut self, old: &TriggerEngine) {
         for slot in &mut self.slots {
-            if let Some(o) = old.slots.iter().find(|o| {
-                o.trigger.id == slot.trigger.id
-                    && o.trigger.text == slot.trigger.text
-                    && (o.trigger.at_pct - slot.trigger.at_pct).abs() < 1e-9
-            }) {
+            if let Some(o) = old
+                .slots
+                .iter()
+                .find(|o| o.trigger.id == slot.trigger.id && o.trigger.text == slot.trigger.text)
+            {
                 slot.times_spoken = o.times_spoken;
                 slot.last_spoken_lap = o.last_spoken_lap;
                 slot.armed_lap = o.armed_lap;
@@ -297,6 +306,11 @@ impl TriggerEngine {
             let keep = forward(p.armed_pct, pct) <= slots[p.slot].trigger.max_delay_pct;
             if !keep {
                 slots[p.slot].dropped += 1;
+                tracing::info!(
+                    "cue \"{}\" dropped: no slot to speak it within {:.0} % of a lap",
+                    slots[p.slot].trigger.id,
+                    slots[p.slot].trigger.max_delay_pct * 100.0
+                );
             }
             keep
         });
@@ -305,8 +319,14 @@ impl TriggerEngine {
         if ctx.speaking || braking || quiet || self.pending.is_empty() {
             return out;
         }
+        // The current speed overestimates the time left on a corner exit,
+        // where the car accelerates: the reference timing bounds it.
         let speed = (s.speed as f64).max(5.0);
-        let available_s = self.distance_to_quiet(pct) * ctx.track_length_m / speed;
+        let by_speed = self.distance_to_quiet(pct) * ctx.track_length_m / speed;
+        let available_s = match &self.profile {
+            Some(p) => by_speed.min(p.time_to_quiet(pct, &self.quiet)),
+            None => by_speed,
+        };
         let mut order: Vec<usize> = (0..self.pending.len()).collect();
         order.sort_by(|&a, &b| {
             let (sa, sb) = (

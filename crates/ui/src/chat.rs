@@ -59,10 +59,10 @@ impl Chat {
     }
 
     /// Adds the summary of a new analysis, once per lap.
-    pub fn analysis_message(&mut self, lap: i32, summary: &str, secs: f64) {
+    pub fn analysis_message(&mut self, title: &str, summary: &str, secs: f64) {
         self.push(
             Who::Analysis,
-            format!("Lap {lap} ({secs:.0} s): {}", summary.trim()),
+            format!("{title} ({secs:.0} s): {}", summary.trim()),
             None,
         );
     }
@@ -169,6 +169,7 @@ pub fn driver_context(
     snap: &LiveSnapshot,
     analyzer: Option<&Analyzer>,
     coach: &RuntimeStatus,
+    focus: Option<String>,
 ) -> PilotContext {
     let sample = snap.sample;
     let pct = sample.map(|s| s.lap_dist_pct as f64);
@@ -216,6 +217,7 @@ pub fn driver_context(
             .rev()
             .map(|e| e.text.clone())
             .collect(),
+        focus,
     }
 }
 
@@ -266,7 +268,7 @@ mod tests {
             turn: 1,
             text: "The ".into(),
         });
-        c.analysis_message(3, "T6: cue added.", 12.0);
+        c.analysis_message("Lap 3", "T6: cue added.", 12.0);
         c.apply(CoachEvent::Chunk {
             turn: 1,
             text: "costliest is T6.".into(),
@@ -360,7 +362,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let ctx = driver_context(&snap, Some(&a), &RuntimeStatus::default());
+        let ctx = driver_context(&snap, Some(&a), &RuntimeStatus::default(), None);
         assert_eq!(ctx.lap, Some(3));
         assert_eq!(ctx.last_corner.as_deref(), Some("T3"));
         assert_eq!(ctx.next_corner.as_deref(), Some("T4"));

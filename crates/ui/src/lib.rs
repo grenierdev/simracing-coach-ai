@@ -1,35 +1,39 @@
 //! GPUI interface of the coach, in three screens:
 //!
-//! - **Coaching**: compact, meant to stay on top of the game: coach state
-//!   lights, voice levels, live delta, per-corner analysis and cues;
+//! - **Coaching**: coach state lights, voice levels, focus corners, live
+//!   delta, per-corner analysis and cues;
 //! - **Chat**: conversation with the coach, its analyses, tool calls and the
 //!   detailed corner metrics;
 //! - **Setup**: session, reference, plan, voice, devices and connections.
 //!
+//! A separate [`widget`] window, small and without chrome, stays on top of the
+//! game while driving.
+//!
 //! The UI only reads the snapshot published by the telemetry hub, at ~30 Hz;
 //! it never blocks the fast loop.
 
+mod auto_widget;
 pub mod chat;
 pub mod conversation;
 pub mod format;
 mod panels;
-mod pin;
 pub mod planner;
 mod screens;
 pub mod settings;
 pub mod state;
+pub mod widget;
 mod widgets;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use coach::CoachAgent;
 use gpui::{
     App, Bounds, Context, FocusHandle, IntoElement, KeyDownEvent, PathPromptOptions, Render,
-    SharedString, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px,
-    size,
+    SharedString, Task, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div,
+    prelude::*, px, size,
 };
 use mcp::ToolCallLog;
 use reference::ReferenceLap;
@@ -49,8 +53,6 @@ use voice::{Listener, Recorder};
 const REFRESH: Duration = Duration::from_millis(33);
 /// Level history shown by the meters (~2 s at the refresh rate).
 const WAVE_LEN: usize = 60;
-/// Window size of the pinned (always on top) coaching screen.
-const COMPACT: (f32, f32) = (460., 680.);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Screen {
@@ -105,18 +107,28 @@ pub fn run(title: &str, options: StartOptions, make_services: impl FnOnce() -> S
     gpui_platform::application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1180.), px(820.)), cx);
         let services = make_services();
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title),
+        let main = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some(title),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |_, cx| cx.new(|cx| CoachView::new(services, options, cx)),
-        )
-        .expect("opening the window");
+                },
+                |_, cx| cx.new(|cx| CoachView::new(services, options, cx)),
+            )
+            .expect("opening the window");
+        // The widget has no close button: closing the main window ends the
+        // application even while the widget is open.
+        let main_id = main.window_id();
+        cx.on_window_closed(move |cx, id| {
+            if id == main_id {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.activate(true);
     });
 }
@@ -133,52 +145,6 @@ impl Activity {
     pub fn idle(&self) -> bool {
         !(self.listening || self.thinking || self.speaking || self.analyzing)
     }
-}
-
-/// Window placement that GPUI does not expose.
-mod platform {
-    use gpui::Window;
-
-    /// Always-on-top: Win32 `SetWindowPos(HWND_TOPMOST)`.
-    #[cfg(windows)]
-    pub fn set_topmost(window: &Window, on: bool) -> Result<(), String> {
-        topmost(window, on)
-    }
-
-    #[cfg(windows)]
-    fn topmost(window: &impl raw_window_handle::HasWindowHandle, on: bool) -> Result<(), String> {
-        use raw_window_handle::RawWindowHandle;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
-        };
-        let handle = window.window_handle().map_err(|e| e.to_string())?;
-        let RawWindowHandle::Win32(h) = handle.as_raw() else {
-            return Err("not a Win32 window".into());
-        };
-        let hwnd = HWND(h.hwnd.get() as *mut core::ffi::c_void);
-        let after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
-        // SAFETY: the handle comes from the live window, used on its thread.
-        unsafe {
-            SetWindowPos(
-                hwnd,
-                Some(after),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            )
-        }
-        .map_err(|e| e.to_string())
-    }
-
-    #[cfg(not(windows))]
-    pub fn set_topmost(_window: &Window, _on: bool) -> Result<(), String> {
-        Err("only available on Windows".into())
-    }
-
-    pub const SUPPORTED: bool = cfg!(windows);
 }
 
 enum ReferenceStatus {
@@ -232,15 +198,17 @@ pub struct CoachView {
     chat_scroll: gpui::ScrollHandle,
     chat_seen: (usize, usize),
     /// Last analysis already added to the chat.
-    analysis_seen: Option<i32>,
-    /// The window is pinned on top of the game.
-    pinned: bool,
-    /// Pin requested by the startup setting or by iRacing starting/stopping,
-    /// applied outside rendering.
-    pin_request: Option<bool>,
-    auto_pin: pin::AutoPin,
-    /// Window size before pinning, restored when unpinning.
-    restore_size: Option<gpui::Size<gpui::Pixels>>,
+    analysis_seen: Option<u32>,
+    /// Coaching widget window, when open.
+    widget: Option<WindowHandle<widget::WidgetView>>,
+    /// The widget is being opened (deferred to the end of the update).
+    widget_opening: bool,
+    /// Widget requested by the startup setting or by iRacing starting or
+    /// stopping, applied on the next refresh.
+    widget_request: Option<bool>,
+    auto_widget: auto_widget::AutoWidget,
+    /// The widget was moved: position to save once it stops moving.
+    widget_moved: Option<Instant>,
     _refresh: Task<()>,
 }
 
@@ -272,12 +240,17 @@ impl CoachView {
                     view.snap = view.hub.snapshot();
                     let iracing =
                         view.snap.live && view.snap.state == telemetry::ConnectionState::Connected;
-                    if let Some(on) =
-                        view.auto_pin
-                            .update(iracing, view.settings.pin_with_iracing, view.pinned)
-                    {
-                        view.pin_request = Some(on);
+                    if let Some(on) = view.auto_widget.update(
+                        iracing,
+                        view.settings.widget_with_iracing,
+                        view.widget_open(),
+                    ) {
+                        view.widget_request = Some(on);
                     }
+                    if let Some(on) = view.widget_request.take() {
+                        view.set_widget(on, false, cx);
+                    }
+                    view.track_widget(cx);
                     view.coach_status = view.coach.status();
                     view.speaker_status = view.speaker.status();
                     while let Ok(e) = view.conversation.events().try_recv() {
@@ -355,10 +328,11 @@ impl CoachView {
             analysis_seen: None,
             chat_scroll: gpui::ScrollHandle::new(),
             chat_seen: (0, 0),
-            pinned: false,
-            pin_request: None,
-            auto_pin: pin::AutoPin::default(),
-            restore_size: None,
+            widget: None,
+            widget_opening: false,
+            widget_request: None,
+            auto_widget: auto_widget::AutoWidget::default(),
+            widget_moved: None,
             _refresh: refresh,
         };
         match options.reference {
@@ -375,8 +349,8 @@ impl CoachView {
         for n in notes {
             view.chat.system_message(n);
         }
-        if view.settings.always_on_top {
-            view.pin_request = Some(true);
+        if view.settings.widget {
+            view.widget_request = Some(true);
         }
         view
     }
@@ -400,11 +374,12 @@ impl CoachView {
     /// Adds each new analysis summary to the chat, once.
     fn sync_analysis(&mut self) {
         let Some(p) = &self.planner else { return };
-        if let Some((lap, summary, secs)) = p.status().last
-            && self.analysis_seen != Some(lap)
+        if let Some(last) = p.status().last
+            && self.analysis_seen != Some(last.seq)
         {
-            self.analysis_seen = Some(lap);
-            self.chat.analysis_message(lap, &summary, secs);
+            self.analysis_seen = Some(last.seq);
+            self.chat
+                .analysis_message(&last.title, &last.text, last.secs);
         }
     }
 
@@ -421,43 +396,91 @@ impl CoachView {
         }
     }
 
-    /// Pins the window on top of the game in a compact size, or releases it
-    /// and restores its size. `persist`: the driver's choice, saved as the
-    /// "always on top" setting.
-    fn set_on_top(&mut self, on: bool, persist: bool, window: &mut Window) {
-        if on != self.pinned {
-            if let Err(e) = platform::set_topmost(window, on) {
-                self.chat.system_message(format!("Always on top: {e}"));
-                return;
+    fn widget_open(&self) -> bool {
+        self.widget.is_some() || self.widget_opening
+    }
+
+    /// Opens or closes the coaching widget. `persist`: the driver's choice,
+    /// saved so that the widget reopens at the next launch.
+    fn set_widget(&mut self, on: bool, persist: bool, cx: &mut Context<Self>) {
+        if persist {
+            self.settings.widget = on;
+            let _ = self.settings.save();
+        }
+        if on == self.widget_open() {
+            return;
+        }
+        if on {
+            self.widget_opening = true;
+            let me = cx.entity();
+            let origin = self.settings.widget_pos;
+            // Opened after this update: the widget reads this view to draw.
+            cx.defer(move |cx| {
+                let result = widget::open(me.clone(), origin, cx);
+                me.update(cx, |view, cx| {
+                    view.widget_opening = false;
+                    match result {
+                        Ok(h) => view.widget = Some(h),
+                        Err(e) => view.chat.system_message(format!("Widget: {e}")),
+                    }
+                    cx.notify();
+                });
+            });
+        } else if let Some(h) = self.widget.take() {
+            self.save_widget_position();
+            cx.defer(move |cx| {
+                let _ = h.update(cx, |_, window, _| window.remove_window());
+            });
+        }
+    }
+
+    /// Follows the widget: closed from outside (Alt+F4), or moved.
+    fn track_widget(&mut self, cx: &mut Context<Self>) {
+        let Some(h) = self.widget else {
+            return;
+        };
+        match h.update(cx, |_, window, _| window.bounds().origin) {
+            Err(_) => {
+                // Closed by the driver: the automatic rule leaves it closed.
+                self.widget = None;
+                self.auto_widget.manual();
+                self.save_widget_position();
             }
-            self.pinned = on;
-            if on {
-                self.restore_size = Some(window.viewport_size());
-                window.resize(size(px(COMPACT.0), px(COMPACT.1)));
-                self.screen = Screen::Coaching;
-            } else if let Some(previous) = self.restore_size.take() {
-                window.resize(previous);
+            Ok(o) => {
+                let pos = (f32::from(o.x), f32::from(o.y));
+                if self.settings.widget_pos != Some(pos) {
+                    self.settings.widget_pos = Some(pos);
+                    self.widget_moved = Some(Instant::now());
+                } else if self
+                    .widget_moved
+                    .is_some_and(|t| t.elapsed() > Duration::from_secs(1))
+                {
+                    self.save_widget_position();
+                }
             }
         }
-        if persist {
-            self.settings.always_on_top = on;
+    }
+
+    fn save_widget_position(&mut self) {
+        if self.widget_moved.take().is_some() {
             let _ = self.settings.save();
         }
     }
 
-    /// Pin button: the driver's choice wins over the automatic rule.
-    fn toggle_pin(&mut self, window: &mut Window) {
-        self.auto_pin.manual();
-        self.set_on_top(!self.pinned, true, window);
+    /// Widget button: the driver's choice wins over the automatic rule.
+    fn toggle_widget(&mut self, cx: &mut Context<Self>) {
+        self.auto_widget.manual();
+        let on = !self.widget_open();
+        self.set_widget(on, true, cx);
     }
 
-    fn toggle_pin_with_iracing(&mut self) {
-        self.settings.pin_with_iracing = !self.settings.pin_with_iracing;
+    fn toggle_widget_with_iracing(&mut self) {
+        self.settings.widget_with_iracing = !self.settings.widget_with_iracing;
         let _ = self.settings.save();
-        if self.settings.pin_with_iracing
-            && let Some(on) = self.auto_pin.enabled_now(self.pinned)
+        if self.settings.widget_with_iracing
+            && let Some(on) = self.auto_widget.enabled_now(self.widget_open())
         {
-            self.pin_request = Some(on);
+            self.widget_request = Some(on);
         }
     }
 
@@ -672,16 +695,21 @@ impl CoachView {
             _ => None,
         }
     }
+
+    /// Live delta to the reference on the current lap, s.
+    pub(crate) fn live_delta(&self) -> Option<f64> {
+        let s = &self.snap;
+        match (self.ready_reference(), s.sample, s.current_lap_elapsed) {
+            (Some(r), Some(smp), Some(el)) if s.current_lap_flags.is_some_and(|f| f.complete) => {
+                Some(r.analyzer.live_delta(smp.lap_dist_pct as f64, el))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Render for CoachView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(on) = self.pin_request.take() {
-            cx.defer_in(window, move |view, window, cx| {
-                view.set_on_top(on, false, window);
-                cx.notify();
-            });
-        }
         let body = match self.screen {
             Screen::Coaching => self.render_coaching_screen(cx).into_any_element(),
             Screen::Chat => self.render_chat_screen(window, cx).into_any_element(),

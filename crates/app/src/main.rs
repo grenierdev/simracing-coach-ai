@@ -175,6 +175,7 @@ fn main() -> anyhow::Result<()> {
     let settings = ui::settings::Settings::load();
     let language = args.language.unwrap_or(settings.language);
     tracing::info!("voice language: {}", language.name());
+    let (focus_link, focus_commands) = mcp::FocusLink::new();
     let agent_options = agent::AgentOptions {
         enabled: !args.no_agent,
         model: args.model.clone().unwrap_or_else(|| "haiku".into()),
@@ -184,6 +185,7 @@ fn main() -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| "sonnet".into()),
         language,
+        focus: focus_link.clone(),
     };
 
     ui::run(
@@ -206,11 +208,17 @@ fn main() -> anyhow::Result<()> {
             let planner = agent.analysis.clone().map(|analysis| {
                 let snap = hub.snapshot_handle();
                 ui::planner::Planner::spawn(
-                    analysis,
-                    agent_options.analysis_model.clone(),
-                    hub.events().clone(),
-                    std::sync::Arc::new(move || snap.get()),
-                    triggers.clone(),
+                    ui::planner::PlannerDeps {
+                        agent: analysis,
+                        model: agent_options.analysis_model.clone(),
+                        laps: hub.events().clone(),
+                        samples: hub.subscribe_samples(),
+                        snapshot: std::sync::Arc::new(move || snap.get()),
+                        triggers: triggers.clone(),
+                        link: focus_link.clone(),
+                        commands: focus_commands,
+                        language,
+                    },
                     ui::planner::PlannerPolicy::default(),
                     settings.auto_planning,
                 )
@@ -234,6 +242,7 @@ fn main() -> anyhow::Result<()> {
                     input: Some(input.clone()),
                     recorder: Some(recorder.clone() as std::sync::Arc<dyn voice::Microphone>),
                     listener: Some(listener.clone()),
+                    focus: planner.is_some().then(|| focus_link.clone()),
                 },
                 settings.speak_replies,
             );

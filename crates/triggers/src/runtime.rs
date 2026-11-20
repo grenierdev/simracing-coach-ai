@@ -16,6 +16,7 @@ use telemetry::{LapEvent, LapRecorder, Sample};
 
 use crate::engine::{Command, TickContext, TriggerEngine, TriggerView};
 use crate::plan::{Plan, TrackContext, Trigger, TriggerSpec, resolve};
+use crate::timing::{Fit, TimeProfile, fit_positions};
 
 /// Speech output as seen by the engine. Implemented by the `voice` crate (via
 /// the application); a fake in tests.
@@ -47,6 +48,8 @@ pub struct RuntimeStatus {
     pub log: Vec<LogEntry>,
     pub quiet_now: bool,
     pub quiet_zones: usize,
+    /// Where each cue is spoken and whether it has time (reference pace).
+    pub fits: Vec<Fit>,
 }
 
 /// When to speak an injected sentence.
@@ -211,7 +214,36 @@ fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(Trigge
         .as_ref()
         .map(|a| a.model.length_m)
         .unwrap_or(4000.0);
-    let engine = TriggerEngine::new(triggers, quiet);
+    // Cues that would not have time to be spoken are moved earlier on their
+    // straight; the ones that still do not fit are reported.
+    let profile = shared
+        .analyzer
+        .as_deref()
+        .and_then(TimeProfile::from_analyzer);
+    shared.status.fits = match &profile {
+        Some(p) => {
+            let fits = fit_positions(&mut triggers, &quiet, p, length, &mut |t| {
+                speech.duration(t)
+            });
+            for f in &fits {
+                if let Some(problem) = f.problem() {
+                    tracing::warn!("{problem}");
+                } else if f.moved_m > 1.0 {
+                    tracing::info!(
+                        "cue \"{}\" moved {:.0} m earlier to have time to be spoken",
+                        f.id,
+                        f.moved_m
+                    );
+                }
+            }
+            fits
+        }
+        None => vec![],
+    };
+    let mut engine = TriggerEngine::new(triggers, quiet);
+    if let Some(p) = profile {
+        engine.set_time_profile(p);
+    }
     shared.status.triggers = engine.views();
     Some((engine, length))
 }

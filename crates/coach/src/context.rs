@@ -15,6 +15,8 @@ pub struct PilotContext {
     pub live_delta: Option<f64>,
     /// Most recent cues spoken (most recent last).
     pub recent_cues: Vec<String>,
+    /// Focus coaching: corners worked on and latest attempts.
+    pub focus: Option<String>,
 }
 
 /// `[Context] …` followed by the driver's message.
@@ -38,6 +40,10 @@ pub fn format_prompt(ctx: &PilotContext, message: &str) -> String {
     let mut out = String::from("[Context] ");
     out.push_str(if parts.is_empty() { "no telemetry" } else { "" });
     out.push_str(&parts.join(", "));
+    if let Some(f) = &ctx.focus {
+        out.push_str("\nFocus: ");
+        out.push_str(f);
+    }
     if !ctx.recent_cues.is_empty() {
         out.push_str("\nRecent cues: ");
         out.push_str(
@@ -66,11 +72,13 @@ mod tests {
             next_corner: Some("T5".into()),
             live_delta: Some(0.31),
             recent_cues: vec!["Hairpin, be patient on the throttle.".into()],
+            focus: Some("T5, T6: attempt 2, +0.21 s".into()),
         };
         let p = format_prompt(&ctx, " no rotation in T5 ");
         assert_eq!(
             p,
             "[Context] lap 5, position 43 %, last corner T4, next corner T5, delta +0.31 s\n\
+             Focus: T5, T6: attempt 2, +0.21 s\n\
              Recent cues: \"Hairpin, be patient on the throttle.\"\n\
              [Driver] no rotation in T5"
         );

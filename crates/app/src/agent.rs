@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use analysis::Analyzer;
 use coach::{AgentConfig, CoachAgent, McpEndpoint};
-use mcp::{CoachData, McpServerHandle, ToolCallLog};
+use mcp::{CoachData, FocusLink, McpServerHandle, ToolCallLog};
 use telemetry::{LiveSnapshot, SnapshotHandle};
 use triggers::{Plan, SayWhen, TriggerRuntime};
 
@@ -20,6 +20,8 @@ pub struct AppData {
     pub snapshot: SnapshotHandle,
     pub triggers: Arc<TriggerRuntime>,
     pub tool_log: ToolLog,
+    /// Focus coaching loop (with the analysis session only).
+    pub focus: Option<FocusLink>,
 }
 
 impl CoachData for AppData {
@@ -37,6 +39,9 @@ impl CoachData for AppData {
     }
     fn say(&self, text: String, when: SayWhen) {
         self.triggers.say(text, when);
+    }
+    fn focus(&self) -> Option<FocusLink> {
+        self.focus.clone()
     }
     fn tool_called(&self, name: &str, ok: bool, millis: f64) {
         let mut log = self.tool_log.lock().unwrap();
@@ -61,6 +66,8 @@ pub struct AgentOptions {
     pub analysis_model: String,
     /// Language of the replies.
     pub language: voice::Language,
+    /// Focus coaching loop, driven by the analysis session.
+    pub focus: FocusLink,
 }
 
 /// Startup result: what the UI displays and drives.
@@ -139,12 +146,14 @@ pub fn start(
         }
     };
     // One MCP endpoint per session, to know who calls which tool.
+    let with_focus = options.enabled && options.analysis;
     let data = |source: &'static str| {
         Arc::new(AppData {
             source,
             snapshot: snapshot.clone(),
             triggers: triggers.clone(),
             tool_log: tool_log.clone(),
+            focus: with_focus.then(|| options.focus.clone()),
         })
     };
     let analysis_server = (options.enabled && options.analysis)

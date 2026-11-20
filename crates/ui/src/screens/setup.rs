@@ -3,8 +3,8 @@
 
 use gpui::{Context, div, prelude::*, px};
 
+use crate::CoachView;
 use crate::widgets::*;
-use crate::{CoachView, platform};
 
 impl CoachView {
     pub(crate) fn render_setup_screen(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -16,7 +16,7 @@ impl CoachView {
                 .gap_2()
                 .text_sm()
                 .child(div().flex_1().child(format!(
-                    "Plan the next lap after each valid lap ({})",
+                    "Focus coaching: work on one or two corners at a time, each pass analyzed ({})",
                     st.model
                 )))
                 .child(
@@ -38,28 +38,26 @@ impl CoachView {
                 .child(control)
         };
         let on_off = |on: bool| if on { "On" } else { "Off" };
-        let on_top = platform::SUPPORTED.then(|| {
-            option(
-                "Keep the compact coaching window on top of the game",
-                button("on-top-setup", on_off(self.settings.always_on_top)).on_click(cx.listener(
-                    |view, _, window, cx| {
-                        view.toggle_pin(window);
-                        cx.notify();
-                    },
-                )),
+        let on_top = Some(option(
+            "Coaching widget on top of the game",
+            button("widget-setup", on_off(self.widget_open())).on_click(cx.listener(
+                |view, _, _, cx| {
+                    view.toggle_widget(cx);
+                    cx.notify();
+                },
+            )),
+        ));
+        let with_iracing = Some(option(
+            "Open the widget automatically while iRacing is running",
+            button(
+                "widget-with-iracing",
+                on_off(self.settings.widget_with_iracing),
             )
-        });
-        let with_iracing = platform::SUPPORTED.then(|| {
-            option(
-                "Pin it on top automatically while iRacing is running",
-                button("pin-with-iracing", on_off(self.settings.pin_with_iracing)).on_click(
-                    cx.listener(|view, _, _, cx| {
-                        view.toggle_pin_with_iracing();
-                        cx.notify();
-                    }),
-                ),
-            )
-        });
+            .on_click(cx.listener(|view, _, _, cx| {
+                view.toggle_widget_with_iracing();
+                cx.notify();
+            })),
+        ));
         div()
             .flex()
             .flex_1()

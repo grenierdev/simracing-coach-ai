@@ -521,19 +521,22 @@ impl CoachView {
         let p = self.planner.as_ref()?;
         let st = p.status();
         let (line, tone) = if !st.enabled {
-            ("Automatic planning disabled".to_string(), theme::MUTED)
-        } else if let Some(lap) = st.running {
-            (format!("Analyzing lap {lap} ({})…", st.model), theme::WARN)
+            ("Focus coaching disabled".to_string(), theme::MUTED)
+        } else if let Some(what) = &st.running {
+            (format!("Analyzing {what} ({})…", st.model), theme::WARN)
         } else if let Some(e) = &st.error {
             (format!("Analysis: {e}"), theme::ERR)
-        } else if let Some((lap, summary, secs)) = &st.last {
+        } else if let Some(last) = &st.last {
             (
-                format!("Lap {lap} analyzed in {secs:.0} s: {summary}"),
+                format!(
+                    "{} analyzed in {:.0} s: {}",
+                    last.title, last.secs, last.text
+                ),
                 theme::TEXT,
             )
         } else {
             (
-                format!("Analysis ({}) after the next valid lap", st.model),
+                format!("Focus coaching ({}) after the next valid lap", st.model),
                 theme::MUTED,
             )
         };

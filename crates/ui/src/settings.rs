@@ -22,11 +22,15 @@ pub struct Settings {
     pub microphone: Option<DeviceChoice>,
     /// Output for the coach's voice; system default if absent.
     pub output: Option<DeviceChoice>,
-    /// Compact coaching window kept on top of the game (Windows).
-    pub always_on_top: bool,
-    /// Pin the coaching window on top while iRacing is running, release it
-    /// when iRacing stops (Windows).
-    pub pin_with_iracing: bool,
+    /// Coaching widget (small window on top of the game) open. Read from
+    /// `always_on_top`, the setting of v0.3 and v0.4.
+    #[serde(alias = "always_on_top")]
+    pub widget: bool,
+    /// Open the widget while iRacing is running, close it when iRacing stops.
+    #[serde(alias = "pin_with_iracing")]
+    pub widget_with_iracing: bool,
+    /// Last position of the widget on screen (top-left corner), px.
+    pub widget_pos: Option<(f32, f32)>,
 }
 
 /// An audio device saved by id; the name is for display (and for the log
@@ -52,8 +56,9 @@ impl Default for Settings {
             language: Language::default(),
             microphone: None,
             output: None,
-            always_on_top: false,
-            pin_with_iracing: true,
+            widget: false,
+            widget_with_iracing: true,
+            widget_pos: None,
         }
     }
 }
@@ -115,13 +120,23 @@ mod tests {
                 name: "Headset microphone".into(),
             }),
             output: None,
-            always_on_top: true,
-            pin_with_iracing: false,
+            widget: true,
+            widget_with_iracing: false,
+            widget_pos: Some((1200.0, 40.0)),
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
         std::fs::remove_file(&path).unwrap();
         let text = toml::to_string(&s).unwrap();
         assert!(text.contains("language = \"fr\""), "{text}");
+    }
+
+    #[test]
+    fn pin_settings_of_v0_4_open_the_widget() {
+        let s: Settings =
+            toml::from_str("always_on_top = true\npin_with_iracing = false\n").unwrap();
+        assert!(s.widget);
+        assert!(!s.widget_with_iracing);
+        assert_eq!(s.widget_pos, None);
     }
 }

@@ -8,6 +8,7 @@
 pub mod align;
 pub mod line;
 pub mod metrics;
+pub mod pass;
 pub mod zones;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use telemetry::{Corner, CornerDetectionParams, Lap};
 
 pub use align::{AlignedLap, delta_trace, grid_size};
 pub use metrics::{CornerMetrics, corner_metrics};
+pub use pass::{Pass, PassCapture};
 pub use zones::{CornerZone, build_zones};
 
 /// Track map derived from the reference.

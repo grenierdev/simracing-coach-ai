@@ -171,6 +171,7 @@ fn push_to_talk_round_trip() {
             listener: Some(Arc::new(Listener::spawn(|_| {
                 Ok(Box::new(FixedStt) as Box<dyn Stt>)
             }))),
+            focus: None,
         },
         true,
     );
