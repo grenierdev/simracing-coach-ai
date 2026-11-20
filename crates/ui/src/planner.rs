@@ -7,13 +7,15 @@
 //!
 //! 1. **Waiting for a lap**: a complete, valid lap is needed to choose.
 //! 2. **Choosing**: the race engineer reads the lap, picks one corner or two
-//!    consecutive corners (`set_focus`), tells the driver, and places cues on
-//!    them (`update_plan`). The driver can set a save point before them.
+//!    consecutive corners (`set_focus`) and its announcement, with the first
+//!    thing to change, is spoken at once. The driver can set a save point
+//!    before them.
 //! 3. **Practicing**: every pass through the focus corners is compared to the
 //!    reference right after the last corner. The program speaks the time at
-//!    once; the race engineer then adjusts the cues for the next attempt while
-//!    the driver goes around (or resets). This repeats until the gap closes,
-//!    the progress stalls, or someone asks to move on (`next_focus`, from the
+//!    once; the race engineer's advice for the next attempt is spoken as soon
+//!    as its analysis ends, which also tells the driver to reset and go again.
+//!    No cue waits before the corners. This repeats until the gap closes, the
+//!    progress stalls, or someone asks to move on (`next_focus`, from the
 //!    driver through the conversation, or the button). Then back to 2, with
 //!    the corners already worked on set aside.
 //!
@@ -29,7 +31,6 @@ use coach::{AgentStatus, CoachAgent, CoachEvent};
 use crossbeam_channel::{Receiver, select};
 use mcp::{FocusAttempt, FocusCommand, FocusLink, FocusPhase, FocusStatus};
 use telemetry::{Lap, LiveSnapshot, Sample, TelemetryEvent};
-use triggers::plan::PlanSettings;
 use triggers::{Plan, SayWhen, TriggerRuntime};
 use voice::Language;
 
@@ -444,8 +445,11 @@ impl Loop {
                 corners.iter().map(|&i| cmp.corners[i].time_delta).collect(),
             )
         });
+        // No cue waits before the corners: the advice is spoken as soon as
+        // each analysis ends, which also tells the driver to go again.
+        self.deps.triggers.set_coach_plan(Plan::default());
         let text = announcement.unwrap_or_else(|| announce(self.deps.language, &labels));
-        self.deps.triggers.say(text, SayWhen::NextStraight);
+        self.deps.triggers.say(text, SayWhen::Now);
         tracing::info!("focus: {}", labels.join(", "));
         self.phase = Phase::Practicing(Box::new(Focus {
             corners,
@@ -486,7 +490,7 @@ impl Loop {
         self.deps.triggers.set_coach_plan(Plan::default());
         self.deps.triggers.say(
             exit_sentence(self.deps.language, &focus.labels, &exit),
-            SayWhen::NextStraight,
+            SayWhen::Now,
         );
         self.start_choosing();
     }
@@ -516,20 +520,11 @@ impl Loop {
             return;
         };
         let overview = mcp::tools::session_overview(&(self.deps.snapshot)(), Some(&analyzer));
-        let windows = triggers::speaking_windows(&analyzer, &self.plan_settings());
-        let prompt = choose_prompt(
-            &lap,
-            analyzer.reference.lap_time,
-            &overview,
-            &self.finished,
-            &windows,
-        );
+        let prompt = choose_prompt(&lap, analyzer.reference.lap_time, &overview, &self.finished);
         self.prompt(TurnKind::Choose, format!("Lap {}", lap.number), prompt);
     }
 
     fn send_attempt(&mut self) {
-        let settings = self.plan_settings();
-        let coach_plan = self.deps.triggers.coach_plan();
         let Phase::Practicing(focus) = &mut self.phase else {
             return;
         };
@@ -539,19 +534,10 @@ impl Loop {
         if last.number <= focus.analyzed {
             return;
         }
-        let windows = triggers::speaking_windows(&focus.analyzer, &settings);
-        let prompt = attempt_prompt(focus, &windows, coach_plan.as_ref());
+        let prompt = attempt_prompt(focus);
         let title = format!("{} attempt {}", focus.labels.join(", "), last.number);
         focus.analyzed = last.number;
         self.prompt(TurnKind::Attempt, title, prompt);
-    }
-
-    fn plan_settings(&self) -> PlanSettings {
-        self.deps
-            .triggers
-            .current_plan()
-            .map(|(_, p)| p.settings)
-            .unwrap_or_default()
     }
 
     fn prompt(&mut self, kind: TurnKind, title: String, text: String) {
@@ -600,6 +586,14 @@ impl Loop {
                 // corner not worked on yet.
                 if matches!(t.kind, TurnKind::Choose) && matches!(self.phase, Phase::Choosing) {
                     self.fallback_choice();
+                }
+                // The advice, as soon as it is known: it also tells the driver
+                // to reset and go again. Not once the corners were left.
+                if matches!(t.kind, TurnKind::Attempt)
+                    && matches!(self.phase, Phase::Practicing(_))
+                    && let Some(advice) = spoken_advice(&t.text)
+                {
+                    self.deps.triggers.say(advice, SayWhen::Now);
                 }
                 self.next_turn();
                 self.publish();
@@ -708,36 +702,19 @@ fn lap_time(secs: f64) -> String {
     format!("{}:{:02}.{:03}", ms / 60_000, (ms / 1000) % 60, ms % 1000)
 }
 
-fn windows_line(windows: &[(String, Option<f64>)], only: Option<&[String]>) -> String {
-    let parts: Vec<String> = windows
-        .iter()
-        .filter(|(l, _)| only.is_none_or(|o| o.contains(l)))
-        .filter_map(|(l, w)| {
-            w.map(|w| format!("{l} {w:.1} s (about {} characters)", triggers::max_chars(w)))
-        })
-        .collect();
-    if parts.is_empty() {
-        "unknown".into()
-    } else {
-        parts.join(", ")
-    }
-}
-
 /// Message asking the race engineer to choose the focus corners.
 pub fn choose_prompt(
     lap: &Lap,
     reference_time: f64,
     overview: &serde_json::Value,
     finished: &[String],
-    windows: &[(String, Option<f64>)],
 ) -> String {
     format!(
         "[Focus] Choose the corners to work on.\n\
          Lap {} completed in {} ({:+.3} s on the reference).\n\
          Overview (get_session_overview): {}\n\
          Already worked on this session: {}\n\
-         Speaking time on the straight before each braking zone, at reference pace: {}\n\
-         Pick one corner, or two consecutive corners when they are linked, where the most time can be gained and that were not worked on yet. Call set_focus with them and a short announcement, then update_plan (mode replace) with at most one cue per focus corner, short enough for its speaking time. Finish with one summary sentence.",
+         Pick one corner, or two consecutive corners when they are linked, where the most time can be gained and that were not worked on yet. Call set_focus with them and an announcement: the corners and the first thing to change, one or two short sentences, spoken to the driver at once. Do not place cues with update_plan. Finish with one summary sentence for the log.",
         lap.number,
         lap_time(lap.lap_time),
         lap.lap_time - reference_time,
@@ -747,7 +724,6 @@ pub fn choose_prompt(
         } else {
             finished.join("; ")
         },
-        windows_line(windows, None)
     )
 }
 
@@ -782,11 +758,7 @@ pub fn corner_line(c: &CornerComparison) -> String {
     parts.join(", ")
 }
 
-fn attempt_prompt(
-    focus: &Focus,
-    windows: &[(String, Option<f64>)],
-    coach_plan: Option<&Plan>,
-) -> String {
+fn attempt_prompt(focus: &Focus) -> String {
     let last = focus.attempts.last().expect("an attempt");
     let fresh: Vec<&Attempt> = focus
         .attempts
@@ -827,23 +799,13 @@ fn attempt_prompt(
         Some((lap, v)) => format!("{:+.2} s on lap {lap}", v.iter().sum::<f64>()),
         None => "unknown".into(),
     };
-    let active = match coach_plan {
-        Some(p) if !p.triggers.is_empty() => p
-            .triggers
-            .iter()
-            .map(|c| format!("{}: \"{}\"", c.id.as_deref().unwrap_or("?"), c.text))
-            .collect::<Vec<_>>()
-            .join("; "),
-        _ => "none".into(),
-    };
     format!(
         "[Attempt {} on {}] Pass analyzed right after the last focus corner.\n\
          {}\n\
          Conventions: loss > 0 = slower than the reference; brake point, throttle on and turn-in > 0 = later; min speed < 0 = slower; radius < 1 = tighter line; steering > 1 = more steering.\n\
          Start: {start}. Earlier attempts: {}.\n\
-         The driver has already heard the time. Active cues: {active}.\n\
-         Speaking time before the focus corners: {}.\n\
-         If one correction matters most, say it now in one short sentence (say, when = now). Update the cues for the next attempt only if the advice changes (update_plan, mode replace, at most one cue per focus corner). If these corners have nothing more to give, call next_focus. Finish with one summary sentence.",
+         The driver has already heard the time.\n\
+         Reply with the advice for the next attempt only: one short sentence, under 60 characters, the action and a quantity. Your reply is spoken to the driver as soon as you finish, which tells them to go again. If nothing changes, say so in a few words (\"Same again, it's working.\"). If these corners have nothing more to give, call next_focus and reply with a few words.",
         last.number,
         focus.labels.join(", "),
         detail.join("\n"),
@@ -852,8 +814,17 @@ fn attempt_prompt(
         } else {
             earlier.join(", ")
         },
-        windows_line(windows, Some(&focus.labels)),
     )
+}
+
+/// The race engineer's reply to an attempt, as spoken: the last line, without
+/// quotes or markup.
+fn spoken_advice(reply: &str) -> Option<String> {
+    let line = last_line(reply);
+    let line = line
+        .trim_matches(|c: char| c == '"' || c == '*' || c == '`' || c == '“' || c == '”')
+        .trim();
+    (!line.is_empty()).then(|| line.to_string())
 }
 
 /// "T5" → "turn 5"; two corners → "turns 5 and 6".
@@ -1014,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn choose_prompt_lists_overview_finished_and_windows() {
+    fn choose_prompt_lists_overview_and_finished_corners() {
         let lap = Lap {
             number: 4,
             start_time: 0.0,
@@ -1027,13 +998,25 @@ mod tests {
             83.0,
             &serde_json::json!({"x": 1}),
             &["T2: +0.30 s → +0.04 s in 3 attempts (gap closed)".into()],
-            &[("T1".into(), Some(4.0)), ("T2".into(), None)],
         );
         assert!(p.starts_with("[Focus] Choose the corners to work on."));
         assert!(p.contains("Lap 4 completed in 1:23.456 (+0.456 s"));
         assert!(p.contains("{\"x\":1}"));
         assert!(p.contains("T2: +0.30 s"));
-        assert!(p.contains("T1 4.0 s (about 52 characters)"));
         assert!(p.contains("set_focus"));
+        assert!(p.contains("Do not place cues"));
+    }
+
+    #[test]
+    fn advice_is_the_last_line_without_markup() {
+        assert_eq!(
+            spoken_advice("Looking at it.\n\n\"Brake five meters later.\"\n").as_deref(),
+            Some("Brake five meters later.")
+        );
+        assert_eq!(
+            spoken_advice("**Same again.**").as_deref(),
+            Some("Same again.")
+        );
+        assert_eq!(spoken_advice("  \n "), None);
     }
 }

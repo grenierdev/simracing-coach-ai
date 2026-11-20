@@ -413,10 +413,10 @@ impl CoachView {
         if on {
             self.widget_opening = true;
             let me = cx.entity();
-            let origin = self.settings.widget_pos;
+            let (origin, size) = (self.settings.widget_pos, self.settings.widget_size);
             // Opened after this update: the widget reads this view to draw.
             cx.defer(move |cx| {
-                let result = widget::open(me.clone(), origin, cx);
+                let result = widget::open(me.clone(), origin, size, cx);
                 me.update(cx, |view, cx| {
                     view.widget_opening = false;
                     match result {
@@ -434,22 +434,25 @@ impl CoachView {
         }
     }
 
-    /// Follows the widget: closed from outside (Alt+F4), or moved.
+    /// Follows the widget: closed from outside (Alt+F4), moved or resized.
     fn track_widget(&mut self, cx: &mut Context<Self>) {
         let Some(h) = self.widget else {
             return;
         };
-        match h.update(cx, |_, window, _| window.bounds().origin) {
+        match h.update(cx, |_, window, _| window.bounds()) {
             Err(_) => {
                 // Closed by the driver: the automatic rule leaves it closed.
                 self.widget = None;
                 self.auto_widget.manual();
                 self.save_widget_position();
             }
-            Ok(o) => {
-                let pos = (f32::from(o.x), f32::from(o.y));
-                if self.settings.widget_pos != Some(pos) {
+            Ok(b) => {
+                let pos = (f32::from(b.origin.x), f32::from(b.origin.y));
+                let size = (f32::from(b.size.width), f32::from(b.size.height));
+                if self.settings.widget_pos != Some(pos) || self.settings.widget_size != Some(size)
+                {
                     self.settings.widget_pos = Some(pos);
+                    self.settings.widget_size = Some(size);
                     self.widget_moved = Some(Instant::now());
                 } else if self
                     .widget_moved
@@ -569,6 +572,21 @@ impl CoachView {
     fn cycle_language(&mut self) {
         self.settings.language = self.settings.language.next();
         let _ = self.settings.save();
+    }
+
+    /// Volume of the coach's voice, percent: applied from the next sentence
+    /// and saved.
+    fn set_volume(&mut self, percent: u32) {
+        let percent = percent.min(settings::MAX_VOLUME);
+        if let Some(o) = &self.output {
+            o.set_volume(percent as f32 / 100.0);
+        }
+        if percent != self.settings.volume {
+            self.settings.volume = percent;
+            if let Err(e) = self.settings.save() {
+                self.chat.system_message(format!("Settings not saved: {e}"));
+            }
+        }
     }
 
     fn toggle_speak_replies(&mut self) {

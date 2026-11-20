@@ -31,7 +31,14 @@ pub struct Settings {
     pub widget_with_iracing: bool,
     /// Last position of the widget on screen (top-left corner), px.
     pub widget_pos: Option<(f32, f32)>,
+    /// Last size of the widget, px.
+    pub widget_size: Option<(f32, f32)>,
+    /// Volume of the coach's voice, percent (0 to 150).
+    pub volume: u32,
 }
+
+/// Highest coach voice volume, percent.
+pub const MAX_VOLUME: u32 = 150;
 
 /// An audio device saved by id; the name is for display (and for the log
 /// when the device is no longer connected).
@@ -59,6 +66,8 @@ impl Default for Settings {
             widget: false,
             widget_with_iracing: true,
             widget_pos: None,
+            widget_size: None,
+            volume: 100,
         }
     }
 }
@@ -123,6 +132,8 @@ mod tests {
             widget: true,
             widget_with_iracing: false,
             widget_pos: Some((1200.0, 40.0)),
+            widget_size: Some((300.0, 80.0)),
+            volume: 70,
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
@@ -138,5 +149,6 @@ mod tests {
         assert!(s.widget);
         assert!(!s.widget_with_iracing);
         assert_eq!(s.widget_pos, None);
+        assert_eq!(s.volume, 100, "full volume when the setting is missing");
     }
 }

@@ -272,16 +272,35 @@ impl AudioSink for CpalSink {
 }
 
 /// Output whose device can be changed while running: the speaker keeps the
-/// same handle, playback continues on the new device.
+/// same handle, playback continues on the new device. It also sets the
+/// volume of the coach's voice.
 pub struct SwitchableSink {
     inner: Mutex<Arc<dyn AudioSink>>,
+    /// Gain applied to each sentence (`f32` bits), 1.0 = unchanged.
+    gain: AtomicU32,
 }
 
 impl SwitchableSink {
     pub fn new(inner: Arc<dyn AudioSink>) -> Self {
         SwitchableSink {
             inner: Mutex::new(inner),
+            gain: AtomicU32::new(1.0f32.to_bits()),
         }
+    }
+
+    /// Volume of the coach's voice: 0.0 (silent) to 1.5, from the next
+    /// sentence on.
+    pub fn set_volume(&self, gain: f32) {
+        let g = if gain.is_finite() {
+            gain.clamp(0.0, 1.5)
+        } else {
+            1.0
+        };
+        self.gain.store(g.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn volume(&self) -> f32 {
+        f32::from_bits(self.gain.load(Ordering::Relaxed))
     }
 
     /// Replaces the output; the sentence being played on the old one stops.
@@ -300,7 +319,19 @@ impl AudioSink for SwitchableSink {
         self.current().name()
     }
     fn play(&self, audio: &Audio) {
-        self.current().play(audio)
+        let g = self.volume();
+        if (g - 1.0).abs() < 1e-3 {
+            return self.current().play(audio);
+        }
+        let scaled = Audio {
+            samples: audio
+                .samples
+                .iter()
+                .map(|s| (s * g).clamp(-1.0, 1.0))
+                .collect(),
+            sample_rate: audio.sample_rate,
+        };
+        self.current().play(&scaled)
     }
     fn stop(&self) {
         self.current().stop()
@@ -338,6 +369,28 @@ mod tests {
         assert!(!s.is_playing(), "the new output starts silent");
         s.play(&a);
         assert!(s.is_playing());
+    }
+
+    #[test]
+    fn volume_scales_the_next_sentences() {
+        let s = SwitchableSink::new(Arc::new(NullSink::default()));
+        assert_eq!(s.volume(), 1.0);
+        let a = Audio {
+            samples: vec![0.5; 16_000],
+            sample_rate: 16_000,
+        };
+        s.set_volume(0.5);
+        s.play(&a);
+        assert!((s.level() - 0.25).abs() < 1e-3, "{}", s.level());
+        s.stop();
+        // Louder than the source, clipped at full scale.
+        s.set_volume(4.0);
+        assert_eq!(s.volume(), 1.5);
+        s.play(&Audio {
+            samples: vec![0.9; 16_000],
+            sample_rate: 16_000,
+        });
+        assert!((s.level() - 1.0).abs() < 1e-3, "{}", s.level());
     }
 
     #[test]

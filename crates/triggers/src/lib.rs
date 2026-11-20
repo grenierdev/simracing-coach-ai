@@ -19,6 +19,4 @@ pub use plan::{
     resolve,
 };
 pub use runtime::{COACH_PREFIX, LogEntry, RuntimeStatus, SayWhen, SpeechOutput, TriggerRuntime};
-pub use timing::{
-    Fit, TimeProfile, check_fit, estimate_speech_s, fit_positions, max_chars, speaking_windows,
-};
+pub use timing::{Fit, TimeProfile, check_fit, estimate_speech_s, fit_positions, max_chars};

@@ -1,7 +1,7 @@
 //! End-to-end focus coaching: lap completed → the race engineer (fake agent)
-//! chooses a corner through the real MCP server (`set_focus`, `update_plan`)
-//! → a pass through the corner is analyzed right after it → the attempt goes
-//! back to the race engineer → `next_focus` starts a new choice.
+//! chooses a corner through the real MCP server (`set_focus`) → a pass through
+//! the corner is analyzed right after it → the attempt goes back to the race
+//! engineer, whose reply is spoken at once → `next_focus` starts a new choice.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -82,13 +82,20 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
     Agent
         .v1()
         .on_receive_request(
-            async move |req: InitializeRequest, r: Responder<InitializeResponse, V1>, _cx: ConnectionTo<Client>| {
-                r.respond(InitializeResponse::new(req.protocol_version).agent_capabilities(AgentCapabilities::new()))
+            async move |req: InitializeRequest,
+                        r: Responder<InitializeResponse, V1>,
+                        _cx: ConnectionTo<Client>| {
+                r.respond(
+                    InitializeResponse::new(req.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new()),
+                )
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: NewSessionRequest, r: Responder<NewSessionResponse, V1>, _cx: ConnectionTo<Client>| {
+            async move |req: NewSessionRequest,
+                        r: Responder<NewSessionResponse, V1>,
+                        _cx: ConnectionTo<Client>| {
                 if let Some(McpServer::Http(h)) = req.mcp_servers.first() {
                     let token = h.headers[0].value.trim_start_matches("Bearer ").to_string();
                     *mcp2.lock().unwrap() = Some((h.url.clone(), token));
@@ -98,7 +105,9 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: PromptRequest, r: Responder<PromptResponse, V1>, cx: ConnectionTo<Client>| {
+            async move |req: PromptRequest,
+                        r: Responder<PromptResponse, V1>,
+                        cx: ConnectionTo<Client>| {
                 if let Some(ContentBlock::Text(t)) = req.prompt.first() {
                     prompts.lock().unwrap().push(t.text.clone());
                 }
@@ -127,27 +136,22 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
                         }
                     };
                     let summary = if prompt.starts_with("[Focus]") {
-                        call("set_focus", serde_json::json!({
-                            "corners": ["T4"], "announcement": "Hairpin focus: brake later."
-                        }))
-                        .await;
-                        call("update_plan", serde_json::json!({
-                            "mode": "replace",
-                            "triggers": [{
-                                "id": "auto-T4", "corner": "T4", "anchor": "braking", "offset_m": -300,
-                                "text": "Brake later.", "priority": 6
-                            }]
-                        }))
+                        call(
+                            "set_focus",
+                            serde_json::json!({
+                                "corners": ["T4"], "announcement": "Hairpin focus: brake later."
+                            }),
+                        )
                         .await;
                         "T4: braking too early, focus set."
                     } else {
-                        call("say", serde_json::json!({"text": "Release slower.", "when": "now"})).await;
-                        "T4 attempt: release slower."
+                        // The reply itself is the advice, spoken by the program.
+                        "\"Release the brake slower.\""
                     };
                     let _ = client.cancel().await;
-                    let u = SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                        TextContent::new(format!("Done.\n{summary}")),
-                    )));
+                    let u = SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                        ContentBlock::Text(TextContent::new(format!("Done.\n{summary}"))),
+                    ));
                     let _ = cx.send_notification(SessionNotification::new(sid, u));
                     let _ = r.respond(PromptResponse::new(StopReason::EndTurn));
                 });
@@ -255,7 +259,6 @@ fn focus_loop_chooses_analyzes_passes_and_moves_on() {
     );
     assert!(p.contains("Lap 3 completed in"), "{p}");
     assert!(p.contains("time_lost_by_corner"), "overview attached");
-    assert!(p.contains("Speaking time"), "{p}");
     let base = planner
         .status()
         .focus
@@ -288,10 +291,15 @@ fn focus_loop_chooses_analyzes_passes_and_moves_on() {
     assert!(p.starts_with("[Attempt 1 on T4]"), "{p}");
     assert!(p.contains("brake point"), "{p}");
     assert!(p.contains("Start: +"), "{p}");
+    assert!(
+        p.contains("spoken to the driver as soon as you finish"),
+        "{p}"
+    );
     wait_for("attempt analyzed", || planner.status().analyses == 2);
 
-    // The announcement, the time of the pass and the advice were spoken (or
-    // queued: the trigger thread gets no samples here).
+    // The announcement, the time of the pass and the advice (the reply,
+    // without its quotes) were spoken at once (queued here: the trigger thread
+    // gets no samples).
     wait_for("sentences queued", || {
         let texts: Vec<String> = triggers
             .status()
@@ -299,10 +307,16 @@ fn focus_loop_chooses_analyzes_passes_and_moves_on() {
             .iter()
             .map(|v| v.trigger.text.clone())
             .collect();
-        ["Hairpin focus: brake later.", "tenth", "Release slower."]
-            .iter()
-            .all(|w| texts.iter().any(|t| t.contains(w)))
+        [
+            "Hairpin focus: brake later.",
+            "tenth",
+            "Release the brake slower.",
+        ]
+        .iter()
+        .all(|w| texts.iter().any(|t| t == w || t.contains(w)))
+            && !texts.iter().any(|t| t.starts_with('"'))
     });
+    // No cue waits before the corner: only the driver's plan is placed.
     let ids: Vec<String> = triggers
         .status()
         .triggers
@@ -310,7 +324,7 @@ fn focus_loop_chooses_analyzes_passes_and_moves_on() {
         .map(|v| v.trigger.id.clone())
         .filter(|id| !id.starts_with("say-"))
         .collect();
-    assert_eq!(ids, vec!["a", "coach:auto-T4"]);
+    assert_eq!(ids, vec!["a"]);
     assert_eq!(
         triggers.current_plan().unwrap().1.triggers.len(),
         1,

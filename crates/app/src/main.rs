@@ -200,6 +200,9 @@ fn main() -> anyhow::Result<()> {
                 ui::settings::DeviceChoice::id(&settings.output),
                 &mut notes,
             );
+            if let Some(o) = &output {
+                o.set_volume(settings.volume.min(ui::settings::MAX_VOLUME) as f32 / 100.0);
+            }
             let triggers = std::sync::Arc::new(triggers::TriggerRuntime::spawn(
                 hub.subscribe_samples(),
                 Box::new(speech::SpeakerOutput(speaker.clone())),

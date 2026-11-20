@@ -204,8 +204,76 @@ impl CoachView {
                     cx,
                 )
             }))
+            .children(self.output.is_some().then(|| self.render_volume_row(cx)))
             .children(self.render_device_menu(cx))
             .children(latency.map(|l| div().text_xs().text_color(color(theme::MUTED)).child(l)))
+    }
+
+    /// Volume of the coach's voice: a bar of 10 % steps to click, and − / +
+    /// for 5 % steps, up to 150 %.
+    pub(crate) fn render_volume_row(&self, cx: &mut Context<Self>) -> gpui::Div {
+        const STEP: u32 = 10;
+        let volume = self.settings.volume.min(settings::MAX_VOLUME);
+        let segments = (1..=settings::MAX_VOLUME / STEP).map(|i| {
+            let level = i * STEP;
+            let on = level <= volume;
+            div()
+                .id(("volume", level as usize))
+                .w(px(9.))
+                .h(px(14.))
+                .rounded_sm()
+                .cursor_pointer()
+                .bg(color(match (on, level > 100) {
+                    (false, _) => theme::BORDER,
+                    (true, false) => theme::OK,
+                    // Above the voice's own level: louder, may clip.
+                    (true, true) => theme::WARN,
+                }))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.set_volume(level);
+                    cx.notify();
+                }))
+        });
+        let step = |id: &'static str, label: &'static str, delta: i32| {
+            div()
+                .id(id)
+                .px_2()
+                .flex_none()
+                .rounded_md()
+                .bg(color(theme::BORDER))
+                .cursor_pointer()
+                .child(label)
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    let v = view.settings.volume as i32 + delta;
+                    view.set_volume(v.max(0) as u32);
+                    cx.notify();
+                }))
+        };
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .text_xs()
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(color(theme::MUTED))
+                    .child("Coach volume:"),
+            )
+            .child(step("volume-down", "−", -5))
+            .child(div().flex().gap(px(2.)).children(segments))
+            .child(step("volume-up", "+", 5))
+            .child(
+                div()
+                    .w(px(40.))
+                    .flex_none()
+                    .text_color(color(if volume == 0 {
+                        theme::WARN
+                    } else {
+                        theme::TEXT
+                    }))
+                    .child(format!("{volume} %")),
+            )
     }
 
     pub(crate) fn render_device_row(
