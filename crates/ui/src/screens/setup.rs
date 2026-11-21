@@ -16,7 +16,7 @@ impl CoachView {
                 .gap_2()
                 .text_sm()
                 .child(div().flex_1().child(format!(
-                    "Focus coaching: work on one or two corners at a time, each pass analyzed ({})",
+                    "Analyze every turn after each pass and update its cue ({})",
                     st.model
                 )))
                 .child(

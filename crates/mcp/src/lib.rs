@@ -6,13 +6,12 @@
 //! `mcpServers` during `session/new`.
 //!
 //! Tools:
-//! - `get_session_overview()`: laps, delta, time lost per corner (ranked);
+//! - `get_session_overview()`: laps, delta, time lost per corner (ranked),
+//!   and the latest pass through each turn;
 //! - `get_corner_summary(corner, laps)`: corner metrics against the reference;
 //! - `get_corner_trace(corner, channels, lap)`: resampled traces (≤ 100 points);
 //! - `update_plan(triggers, mode)`: replaces or extends the upcoming triggers;
-//! - `say(text, when)`: one-off sentence (now, next straight, position);
-//! - `set_focus(corners, announcement)`: the corners the driver works on;
-//! - `next_focus(reason)`: leaves the current corners for the next finding.
+//! - `say(text, when)`: one-off sentence (now, next straight, position).
 
 pub mod server;
 pub mod tools;
@@ -36,136 +35,90 @@ pub struct ToolCallLog {
     pub millis: f64,
 }
 
-/// Request to the focus coaching loop, from Claude (MCP tools) or the UI.
-#[derive(Debug, Clone, PartialEq)]
-pub enum FocusCommand {
-    /// Work on these corners (indices into the track map), and say so.
-    Set {
-        corners: Vec<usize>,
-        announcement: Option<String>,
-    },
-    /// Leave the current corners for the next finding.
-    Next { reason: String },
-}
-
-/// Stage of the focus coaching loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FocusPhase {
-    /// Automatic planning disabled or unavailable.
-    #[default]
-    Off,
-    /// Waiting for a complete, valid lap to choose what to work on.
-    WaitingForLap,
-    /// The race engineer is choosing the corners.
-    Choosing,
-    /// The driver works on the focus corners; each pass is analyzed.
-    Practicing,
-}
-
-/// One pass through the focus corners.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct FocusAttempt {
-    pub number: u32,
-    pub lap: i32,
-    /// Time lost (+) or gained (−) on the reference over the focus corners, s.
-    pub loss_s: f64,
-    /// Per corner: label and loss, s.
-    pub corners: Vec<(String, f64)>,
-    pub off_track: bool,
-}
-
-/// State of the focus coaching loop, shared with the UI, the MCP tools and
-/// the conversation context.
+/// The passes through one turn, as analyzed after each of them.
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
-pub struct FocusStatus {
-    pub phase: FocusPhase,
-    /// Focus corners ("T5").
-    pub corners: Vec<String>,
-    /// Loss over the focus corners on the lap they were chosen from, s.
-    pub baseline_s: Option<f64>,
-    pub attempts: Vec<FocusAttempt>,
-    /// An attempt is being analyzed by the race engineer.
+pub struct TurnStatus {
+    /// "T5".
+    pub corner: String,
+    /// Passes recorded through the turn.
+    pub passes: u32,
+    /// Time lost (+) or gained (−) on the reference over the turn's zone, on
+    /// the last clean pass, s.
+    pub last_s: Option<f64>,
+    /// Best clean pass, s.
+    pub best_s: Option<f64>,
+    /// The last pass waits for the race engineer.
+    pub queued: bool,
+    /// The race engineer is looking at it now.
     pub analyzing: bool,
-    /// Corners worked on earlier in the session, with their outcome.
-    pub finished: Vec<String>,
 }
 
-impl FocusStatus {
-    /// Best valid attempt, s.
-    pub fn best_s(&self) -> Option<f64> {
-        self.attempts
+/// State of the turn-by-turn coaching, shared with the screens, the MCP
+/// tools and the conversation context.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct CoachingStatus {
+    /// One entry per turn of the track map, in track order.
+    pub turns: Vec<TurnStatus>,
+}
+
+impl CoachingStatus {
+    /// The turns with the most time still to gain (last clean pass), most
+    /// costly first.
+    pub fn top_gains(&self, n: usize) -> Vec<(String, f64)> {
+        let mut v: Vec<(String, f64)> = self
+            .turns
             .iter()
-            .filter(|a| !a.off_track)
-            .map(|a| a.loss_s)
-            .min_by(f64::total_cmp)
+            .filter_map(|t| t.last_s.map(|s| (t.corner.clone(), s)))
+            .filter(|(_, s)| *s >= 0.05)
+            .collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1));
+        v.truncate(n);
+        v
     }
 
-    /// One line for the driver context and the screens: "T5, T6: attempt 3,
-    /// +0.21 s (best +0.15 s, start +0.30 s)".
+    /// One line for the driver context: "analyzing T4; queued T5, T6; most to
+    /// gain: T4 +0.31 s (best +0.12 s), T2 +0.20 s".
     pub fn line(&self) -> Option<String> {
-        match self.phase {
-            FocusPhase::Off => None,
-            FocusPhase::WaitingForLap => {
-                Some("waiting for a clean lap to choose the corners".into())
-            }
-            FocusPhase::Choosing => Some("choosing the corners to work on".into()),
-            FocusPhase::Practicing => {
-                let corners = self.corners.join(", ");
-                let Some(last) = self.attempts.last() else {
-                    let base = self
-                        .baseline_s
-                        .map(|b| format!(" (start {b:+.2} s)"))
-                        .unwrap_or_default();
-                    return Some(format!("{corners}: first attempt{base}"));
-                };
-                let mut extra = vec![];
-                if let Some(b) = self.best_s() {
-                    extra.push(format!("best {b:+.2} s"));
-                }
-                if let Some(b) = self.baseline_s {
-                    extra.push(format!("start {b:+.2} s"));
-                }
-                Some(format!(
-                    "{corners}: attempt {}, {:+.2} s{}{}",
-                    last.number,
-                    last.loss_s,
-                    if last.off_track { " off track" } else { "" },
-                    if extra.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" ({})", extra.join(", "))
-                    }
-                ))
-            }
+        let names = |f: fn(&TurnStatus) -> bool| -> Vec<String> {
+            self.turns
+                .iter()
+                .filter(|t| f(t))
+                .map(|t| t.corner.clone())
+                .collect()
+        };
+        let mut parts = vec![];
+        let analyzing = names(|t| t.analyzing);
+        if !analyzing.is_empty() {
+            parts.push(format!("analyzing {}", analyzing.join(", ")));
         }
+        let queued = names(|t| t.queued);
+        if !queued.is_empty() {
+            parts.push(format!("queued {}", queued.join(", ")));
+        }
+        let gains: Vec<String> = self
+            .top_gains(3)
+            .into_iter()
+            .map(|(c, s)| {
+                let best = self
+                    .turns
+                    .iter()
+                    .find(|t| t.corner == c)
+                    .and_then(|t| t.best_s)
+                    .filter(|b| (b - s).abs() > 0.005)
+                    .map(|b| format!(" (best {b:+.2} s)"))
+                    .unwrap_or_default();
+                format!("{c} {s:+.2} s{best}")
+            })
+            .collect();
+        if !gains.is_empty() {
+            parts.push(format!("most to gain: {}", gains.join(", ")));
+        }
+        (!parts.is_empty()).then(|| parts.join("; "))
     }
 }
 
-/// Link between the focus loop and its clients: a command queue and the
-/// shared status.
-#[derive(Clone)]
-pub struct FocusLink {
-    pub commands: crossbeam_channel::Sender<FocusCommand>,
-    pub status: Arc<Mutex<FocusStatus>>,
-}
-
-impl FocusLink {
-    pub fn new() -> (Self, crossbeam_channel::Receiver<FocusCommand>) {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        (
-            FocusLink {
-                commands: tx,
-                status: Arc::default(),
-            },
-            rx,
-        )
-    }
-
-    pub fn status(&self) -> FocusStatus {
-        self.status.lock().unwrap().clone()
-    }
-}
+/// Shared coaching state, written by the analysis loop.
+pub type CoachingLink = Arc<Mutex<CoachingStatus>>;
 
 /// MCP server access to the program state.
 pub trait CoachData: Send + Sync + 'static {
@@ -177,8 +130,46 @@ pub trait CoachData: Send + Sync + 'static {
     fn say(&self, text: String, when: SayWhen);
     /// Tool call notification (UI log).
     fn tool_called(&self, _name: &str, _ok: bool, _millis: f64) {}
-    /// Focus coaching loop, when the analysis session runs.
-    fn focus(&self) -> Option<FocusLink> {
+    /// Turn-by-turn coaching, when the analysis session runs.
+    fn coaching(&self) -> Option<CoachingStatus> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn(c: &str, last: Option<f64>, best: Option<f64>) -> TurnStatus {
+        TurnStatus {
+            corner: c.into(),
+            passes: 1,
+            last_s: last,
+            best_s: best,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn line_lists_queue_and_gains() {
+        let mut s = CoachingStatus {
+            turns: vec![
+                turn("T1", Some(0.02), None),
+                turn("T2", Some(0.20), Some(0.20)),
+                turn("T4", Some(0.31), Some(0.12)),
+                turn("T5", None, None),
+            ],
+        };
+        s.turns[2].analyzing = true;
+        s.turns[3].queued = true;
+        assert_eq!(
+            s.top_gains(5),
+            vec![("T4".to_string(), 0.31), ("T2".to_string(), 0.20)]
+        );
+        assert_eq!(
+            s.line().unwrap(),
+            "analyzing T4; queued T5; most to gain: T4 +0.31 s (best +0.12 s), T2 +0.20 s"
+        );
+        assert_eq!(CoachingStatus::default().line(), None);
     }
 }

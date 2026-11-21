@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use analysis::Analyzer;
-use mcp::{CoachData, FocusCommand, FocusLink, McpServerHandle};
+use mcp::{CoachData, CoachingStatus, McpServerHandle, TurnStatus};
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -20,7 +20,7 @@ struct Fake {
     plan: Mutex<Option<Plan>>,
     said: Mutex<Vec<String>>,
     calls: Mutex<Vec<String>>,
-    focus: Option<FocusLink>,
+    coaching: Option<CoachingStatus>,
 }
 
 impl CoachData for Fake {
@@ -42,8 +42,8 @@ impl CoachData for Fake {
     fn tool_called(&self, name: &str, _ok: bool, _millis: f64) {
         self.calls.lock().unwrap().push(name.to_string());
     }
-    fn focus(&self) -> Option<FocusLink> {
-        self.focus.clone()
+    fn coaching(&self) -> Option<CoachingStatus> {
+        self.coaching.clone()
     }
 }
 
@@ -64,7 +64,7 @@ fn fake() -> Arc<Fake> {
     fake_with(None)
 }
 
-fn fake_with(focus: Option<FocusLink>) -> Arc<Fake> {
+fn fake_with(coaching: Option<CoachingStatus>) -> Arc<Fake> {
     let track = SyntheticTrack::demo();
     let reference = lap(track.simulate_lap(1.0, 0.0, 0.0), 0);
     let analyzer = Analyzer::new(
@@ -78,7 +78,7 @@ fn fake_with(focus: Option<FocusLink>) -> Arc<Fake> {
             ..Default::default()
         },
         analyzer: Some(Arc::new(analyzer)),
-        focus,
+        coaching,
         ..Default::default()
     })
 }
@@ -114,9 +114,7 @@ async fn tools_over_http_with_bearer_token() {
             "get_corner_summary",
             "get_corner_trace",
             "get_session_overview",
-            "next_focus",
             "say",
-            "set_focus",
             "update_plan"
         ]
     );
@@ -249,10 +247,20 @@ fn merge_plan_replaces_same_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn focus_tools_reach_the_loop() {
-    let args = |v: Value| v.as_object().unwrap().clone();
-    // Without the loop: a readable error.
-    let server = McpServerHandle::start(fake()).await.unwrap();
+async fn overview_carries_the_turns() {
+    let status = CoachingStatus {
+        turns: vec![TurnStatus {
+            corner: "T4".into(),
+            passes: 3,
+            last_s: Some(0.21),
+            best_s: Some(0.15),
+            queued: true,
+            analyzing: false,
+        }],
+    };
+    let server = McpServerHandle::start(fake_with(Some(status)))
+        .await
+        .unwrap();
     let client = ()
         .serve(StreamableHttpClientTransport::from_config(
             StreamableHttpClientTransportConfig::with_uri(server.url.clone())
@@ -260,74 +268,13 @@ async fn focus_tools_reach_the_loop() {
         ))
         .await
         .unwrap();
-    let r = client
-        .call_tool(
-            CallToolRequestParams::new("set_focus")
-                .with_arguments(args(json!({"corners": ["T4"]}))),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.is_error, Some(true));
-    assert!(text_of(&r).contains("not running"));
-    client.cancel().await.unwrap();
-
-    let (link, commands) = FocusLink::new();
-    let data = fake_with(Some(link));
-    let server = McpServerHandle::start(data).await.unwrap();
-    let client = ()
-        .serve(StreamableHttpClientTransport::from_config(
-            StreamableHttpClientTransportConfig::with_uri(server.url.clone())
-                .auth_header(server.token.clone()),
-        ))
-        .await
-        .unwrap();
-    let r = client
-        .call_tool(
-            CallToolRequestParams::new("set_focus").with_arguments(args(json!({
-                "corners": ["5", "T4"], "announcement": "Turns four and five."
-            }))),
-        )
-        .await
-        .unwrap();
-    assert_ne!(r.is_error, Some(true), "{}", text_of(&r));
-    let v: Value = serde_json::from_str(&text_of(&r)).unwrap();
-    assert_eq!(v["focus"], json!(["T4", "T5"]));
-    assert_eq!(
-        commands.try_recv().unwrap(),
-        FocusCommand::Set {
-            corners: vec![3, 4],
-            announcement: Some("Turns four and five.".into())
-        }
-    );
-    // Three corners: refused.
-    let r = client
-        .call_tool(
-            CallToolRequestParams::new("set_focus").with_arguments(args(json!({
-                "corners": ["T1", "T2", "T3"]
-            }))),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.is_error, Some(true));
-    client
-        .call_tool(
-            CallToolRequestParams::new("next_focus")
-                .with_arguments(args(json!({"reason": "the driver asked"}))),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        commands.try_recv().unwrap(),
-        FocusCommand::Next {
-            reason: "the driver asked".into()
-        }
-    );
-    // The overview carries the focus state.
     let r = client
         .call_tool(CallToolRequestParams::new("get_session_overview"))
         .await
         .unwrap();
     let v: Value = serde_json::from_str(&text_of(&r)).unwrap();
-    assert_eq!(v["focus"]["phase"], "off");
+    assert_eq!(v["turns"][0]["corner"], "T4");
+    assert_eq!(v["turns"][0]["best_s"], 0.15);
+    assert_eq!(v["turns"][0]["queued"], true);
     client.cancel().await.unwrap();
 }

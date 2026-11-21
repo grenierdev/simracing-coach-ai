@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use analysis::Analyzer;
 use coach::{AgentConfig, CoachAgent, McpEndpoint};
-use mcp::{CoachData, FocusLink, McpServerHandle, ToolCallLog};
+use mcp::{CoachData, CoachingLink, CoachingStatus, McpServerHandle, ToolCallLog};
 use telemetry::{LiveSnapshot, SnapshotHandle};
 use triggers::{Plan, SayWhen, TriggerRuntime};
 
@@ -20,8 +20,8 @@ pub struct AppData {
     pub snapshot: SnapshotHandle,
     pub triggers: Arc<TriggerRuntime>,
     pub tool_log: ToolLog,
-    /// Focus coaching loop (with the analysis session only).
-    pub focus: Option<FocusLink>,
+    /// Turn-by-turn coaching (with the analysis session only).
+    pub coaching: Option<CoachingLink>,
 }
 
 impl CoachData for AppData {
@@ -40,8 +40,8 @@ impl CoachData for AppData {
     fn say(&self, text: String, when: SayWhen) {
         self.triggers.say(text, when);
     }
-    fn focus(&self) -> Option<FocusLink> {
-        self.focus.clone()
+    fn coaching(&self) -> Option<CoachingStatus> {
+        self.coaching.as_ref().map(|c| c.lock().unwrap().clone())
     }
     fn tool_called(&self, name: &str, ok: bool, millis: f64) {
         let mut log = self.tool_log.lock().unwrap();
@@ -66,8 +66,8 @@ pub struct AgentOptions {
     pub analysis_model: String,
     /// Language of the replies.
     pub language: voice::Language,
-    /// Focus coaching loop, driven by the analysis session.
-    pub focus: FocusLink,
+    /// Turn-by-turn coaching, driven by the analysis session.
+    pub coaching: CoachingLink,
 }
 
 /// Startup result: what the UI displays and drives.
@@ -146,14 +146,14 @@ pub fn start(
         }
     };
     // One MCP endpoint per session, to know who calls which tool.
-    let with_focus = options.enabled && options.analysis;
+    let with_coaching = options.enabled && options.analysis;
     let data = |source: &'static str| {
         Arc::new(AppData {
             source,
             snapshot: snapshot.clone(),
             triggers: triggers.clone(),
             tool_log: tool_log.clone(),
-            focus: with_focus.then(|| options.focus.clone()),
+            coaching: with_coaching.then(|| options.coaching.clone()),
         })
     };
     let analysis_server = (options.enabled && options.analysis)

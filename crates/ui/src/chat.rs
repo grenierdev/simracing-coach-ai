@@ -169,7 +169,7 @@ pub fn driver_context(
     snap: &LiveSnapshot,
     analyzer: Option<&Analyzer>,
     coach: &RuntimeStatus,
-    focus: Option<String>,
+    turns: Option<String>,
 ) -> PilotContext {
     let sample = snap.sample;
     let pct = sample.map(|s| s.lap_dist_pct as f64);
@@ -217,7 +217,7 @@ pub fn driver_context(
             .rev()
             .map(|e| e.text.clone())
             .collect(),
-        focus,
+        turns,
     }
 }
 

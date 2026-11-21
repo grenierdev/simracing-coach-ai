@@ -1,105 +1,48 @@
-//! Focus coaching loop, driven by the analysis session.
+//! Turn-by-turn coaching, driven by the analysis session.
 //!
-//! An analysis takes about 15 s: waiting for the end of the lap meant that the
-//! new cues arrived after the first corners of the next lap. The loop works on
-//! one or two corners at a time instead, and analyzes each pass through them
-//! as soon as the car leaves the last one:
+//! An analysis takes about 15 s, too long to wait for the end of the lap.
+//! Every turn is analyzed instead as soon as the car leaves it:
 //!
-//! 1. **Waiting for a lap**: a complete, valid lap is needed to choose.
-//! 2. **Choosing**: the race engineer reads the lap, picks one corner or two
-//!    consecutive corners (`set_focus`) and its announcement, with the first
-//!    thing to change, is spoken at once. The driver can set a save point
-//!    before them.
-//! 3. **Practicing**: every pass through the focus corners is compared to the
-//!    reference right after the last corner. The program speaks the time at
-//!    once; the race engineer's advice for the next attempt is spoken as soon
-//!    as its analysis ends, which also tells the driver to reset and go again.
-//!    No cue waits before the corners. This repeats until the gap closes, the
-//!    progress stalls, or someone asks to move on (`next_focus`, from the
-//!    driver through the conversation, or the button). Then back to 2, with
-//!    the corners already worked on set aside.
+//! 1. each turn has its own capture over its zone ([`analysis::PassCapture`]);
+//!    a pass ends when the car leaves the zone, and is compared to the
+//!    reference at once;
+//! 2. the turn joins a queue, which keeps only its latest pass; when the race
+//!    engineer is free, it receives the queued turns (a few at a time) and
+//!    updates their cues with `update_plan`;
+//! 3. a cue is spoken before its turn on the next pass: on the next lap, or
+//!    right away after a reset before the turn.
+//!
+//! The driver can drive full laps and follow every cue, or reset to a save
+//! point and work on one turn or a sequence of turns: resets do not get in
+//! the way (a pass can start from the reset point). After a reset, the time of
+//! the first turn is spoken as soon as the car leaves it.
 //!
 //! The driver's own plan is never modified. Nothing here blocks the fast loop
 //! or the conversation.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use analysis::{Analyzer, CornerComparison, PassCapture};
+use analysis::{Analyzer, CornerComparison, Pass, PassCapture};
 use coach::{AgentStatus, CoachAgent, CoachEvent};
 use crossbeam_channel::{Receiver, select};
-use mcp::{FocusAttempt, FocusCommand, FocusLink, FocusPhase, FocusStatus};
-use telemetry::{Lap, LiveSnapshot, Sample, TelemetryEvent};
+use mcp::{CoachingLink, CoachingStatus, TurnStatus};
+use telemetry::{Sample, TelemetryEvent};
 use triggers::{Plan, SayWhen, TriggerRuntime};
 use voice::Language;
 
-/// When to leave the focus corners.
 #[derive(Debug, Clone, Copy)]
 pub struct PlannerPolicy {
-    /// Gap closed: loss over the focus corners at or below this, s.
-    pub collapse_s: f64,
-    /// Progress stalled: the last `plateau_attempts` valid attempts did not
-    /// beat the earlier best by `plateau_gain_s`.
-    pub plateau_attempts: usize,
-    pub plateau_gain_s: f64,
-    /// At most this many attempts on the same corners.
-    pub max_attempts: usize,
+    /// Turns sent to the race engineer in one message, at most.
+    pub max_batch: usize,
 }
 
 impl Default for PlannerPolicy {
     fn default() -> Self {
-        PlannerPolicy {
-            collapse_s: 0.05,
-            plateau_attempts: 3,
-            plateau_gain_s: 0.03,
-            max_attempts: 12,
-        }
+        PlannerPolicy { max_batch: 4 }
     }
-}
-
-/// Why the focus corners were left.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Exit {
-    GapClosed,
-    NoProgress,
-    MaxAttempts,
-    Asked(String),
-}
-
-impl Exit {
-    fn label(&self) -> String {
-        match self {
-            Exit::GapClosed => "gap closed".into(),
-            Exit::NoProgress => "no more progress".into(),
-            Exit::MaxAttempts => "attempt limit".into(),
-            Exit::Asked(r) => r.clone(),
-        }
-    }
-}
-
-/// Decides whether to leave the focus corners after the attempts so far
-/// (losses in s, `None` for an attempt that went off track).
-pub fn verdict(attempts: &[Option<f64>], policy: &PlannerPolicy) -> Option<Exit> {
-    let valid: Vec<f64> = attempts.iter().flatten().copied().collect();
-    if let Some(&last) = valid.last()
-        && attempts.last().is_some_and(|a| a.is_some())
-        && last <= policy.collapse_s
-    {
-        return Some(Exit::GapClosed);
-    }
-    if attempts.len() >= policy.max_attempts {
-        return Some(Exit::MaxAttempts);
-    }
-    let k = policy.plateau_attempts.max(1);
-    if valid.len() > k {
-        let best = |v: &[f64]| v.iter().copied().fold(f64::INFINITY, f64::min);
-        let (before, recent) = valid.split_at(valid.len() - k);
-        if best(recent) > best(before) - policy.plateau_gain_s {
-            return Some(Exit::NoProgress);
-        }
-    }
-    None
 }
 
 /// Last analysis finished, for the chat and the screens.
@@ -107,7 +50,7 @@ pub fn verdict(attempts: &[Option<f64>], policy: &PlannerPolicy) -> Option<Exit>
 pub struct AnalysisSummary {
     /// Increases with each analysis.
     pub seq: u32,
-    /// What was analyzed: "Lap 4", "T5, T6 attempt 3".
+    /// What was analyzed: "T4, T5".
     pub title: String,
     pub text: String,
     pub secs: f64,
@@ -122,30 +65,26 @@ pub struct PlannerStatus {
     pub last: Option<AnalysisSummary>,
     pub analyses: u32,
     pub error: Option<String>,
-    pub focus: FocusStatus,
+    pub coaching: CoachingStatus,
 }
 
 pub struct Planner {
     status: Arc<Mutex<PlannerStatus>>,
     enabled: Arc<AtomicBool>,
-    link: FocusLink,
+    link: CoachingLink,
 }
-
-pub type SnapshotFn = Arc<dyn Fn() -> LiveSnapshot + Send + Sync>;
 
 /// What the loop is connected to.
 pub struct PlannerDeps {
     pub agent: Arc<CoachAgent>,
     pub model: String,
-    /// Hub events (completed laps).
+    /// Hub events: drained (the turns come from the samples).
     pub laps: Receiver<TelemetryEvent>,
     /// Every telemetry sample (`TelemetryHub::subscribe_samples`).
     pub samples: Receiver<Sample>,
-    pub snapshot: SnapshotFn,
     pub triggers: Arc<TriggerRuntime>,
-    /// Shared with the MCP servers and the conversation.
-    pub link: FocusLink,
-    pub commands: Receiver<FocusCommand>,
+    /// Shared with the MCP servers, the conversation and the screens.
+    pub link: CoachingLink,
     /// Language of the sentences the program speaks itself.
     pub language: Language,
 }
@@ -175,7 +114,7 @@ impl Planner {
 
     pub fn status(&self) -> PlannerStatus {
         let mut s = self.status.lock().unwrap().clone();
-        s.focus = self.link.status();
+        s.coaching = self.link.lock().unwrap().clone();
         s
     }
 
@@ -183,57 +122,74 @@ impl Planner {
         self.enabled.store(on, Ordering::Relaxed);
         self.status.lock().unwrap().enabled = on;
     }
-
-    /// Leaves the focus corners (button on the screens).
-    pub fn next_focus(&self) {
-        let _ = self.link.commands.send(FocusCommand::Next {
-            reason: "the driver asked to move on".into(),
-        });
-    }
 }
 
-struct Attempt {
+/// One pass through a turn, compared to the reference.
+struct PassResult {
     number: u32,
     lap: i32,
-    corners: Vec<CornerComparison>,
-    loss: f64,
+    corner: CornerComparison,
     off_track: bool,
+    after_reset: bool,
 }
 
-struct Focus {
-    corners: Vec<usize>,
-    labels: Vec<String>,
-    analyzer: Arc<Analyzer>,
-    capture: PassCapture,
-    /// Per-corner loss on the lap the corners were chosen from, s.
-    baseline: Option<(i32, Vec<f64>)>,
-    attempts: Vec<Attempt>,
-    /// Attempts already sent to the race engineer.
-    analyzed: u32,
-}
-
-impl Focus {
-    fn baseline_s(&self) -> Option<f64> {
-        self.baseline.as_ref().map(|(_, v)| v.iter().sum())
+impl PassResult {
+    fn loss(&self) -> f64 {
+        self.corner.time_delta
     }
 }
 
-enum Phase {
-    Off,
-    WaitingForLap,
-    Choosing,
-    Practicing(Box<Focus>),
+struct TurnHistory {
+    label: String,
+    passes: Vec<PassResult>,
 }
 
-#[derive(Clone)]
-enum TurnKind {
-    Choose,
-    Attempt,
+impl TurnHistory {
+    fn best(&self) -> Option<f64> {
+        self.passes
+            .iter()
+            .filter(|p| !p.off_track)
+            .map(PassResult::loss)
+            .min_by(f64::total_cmp)
+    }
+
+    fn last_clean(&self) -> Option<f64> {
+        self.passes
+            .iter()
+            .rev()
+            .find(|p| !p.off_track)
+            .map(PassResult::loss)
+    }
+}
+
+/// Captures and history for the current track map.
+struct Track {
+    analyzer: Arc<Analyzer>,
+    captures: Vec<PassCapture>,
+    turns: Vec<TurnHistory>,
+}
+
+impl Track {
+    fn new(analyzer: Arc<Analyzer>) -> Self {
+        Track {
+            captures: analyzer.turn_captures(),
+            turns: analyzer
+                .model
+                .corners
+                .iter()
+                .map(|c| TurnHistory {
+                    label: c.label(),
+                    passes: vec![],
+                })
+                .collect(),
+            analyzer,
+        }
+    }
 }
 
 struct Turn {
     id: u64,
-    kind: TurnKind,
+    corners: Vec<usize>,
     title: String,
     started: Instant,
     text: String,
@@ -244,14 +200,10 @@ struct Loop {
     policy: PlannerPolicy,
     status: Arc<Mutex<PlannerStatus>>,
     enabled: Arc<AtomicBool>,
-    phase: Phase,
+    track: Option<Track>,
+    /// Turns waiting for the race engineer, oldest first, each once.
+    queue: VecDeque<usize>,
     turn: Option<Turn>,
-    /// A choice to make once the current turn ends.
-    choose_pending: bool,
-    last_valid: Option<Arc<Lap>>,
-    finished: Vec<String>,
-    /// Corners worked on, not to be chosen again right away.
-    done_labels: Vec<String>,
     seq: u32,
 }
 
@@ -267,44 +219,27 @@ impl Loop {
             policy,
             status,
             enabled,
-            phase: Phase::Off,
+            track: None,
+            queue: VecDeque::new(),
             turn: None,
-            choose_pending: false,
-            last_valid: None,
-            finished: vec![],
-            done_labels: vec![],
             seq: 0,
         }
     }
 
     fn run(mut self) {
-        let laps = self.deps.laps.clone();
+        let mut laps = self.deps.laps.clone();
         let mut samples = self.deps.samples.clone();
-        let mut commands = self.deps.commands.clone();
         let events = self.deps.agent.events().clone();
-        self.sync_enabled();
         self.publish();
         loop {
             select! {
-                recv(laps) -> e => match e {
-                    Ok(TelemetryEvent::LapCompleted(lap)) => {
-                        self.sync_enabled();
-                        self.on_lap(lap);
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
+                // A closed channel is always ready: stop listening to it.
+                recv(laps) -> e => if e.is_err() {
+                    laps = crossbeam_channel::never();
                 },
                 recv(samples) -> s => match s {
                     Ok(s) => self.on_sample(&s),
-                    // A closed channel is always ready: stop listening to it.
                     Err(_) => samples = crossbeam_channel::never(),
-                },
-                recv(commands) -> c => match c {
-                    Ok(c) => {
-                        self.sync_enabled();
-                        self.on_command(c);
-                    }
-                    Err(_) => commands = crossbeam_channel::never(),
                 },
                 recv(events) -> e => match e {
                     Ok(e) => self.on_agent(e),
@@ -314,234 +249,124 @@ impl Loop {
         }
     }
 
-    fn sync_enabled(&mut self) {
-        let on = self.enabled.load(Ordering::Relaxed);
-        match (&self.phase, on) {
-            (Phase::Off, true) => {
-                self.phase = Phase::WaitingForLap;
-                self.publish();
-            }
-            (Phase::Off, false) => {}
-            (_, false) => {
-                self.phase = Phase::Off;
-                self.choose_pending = false;
-                self.publish();
-            }
-            _ => {}
-        }
-    }
-
-    fn on_lap(&mut self, lap: Arc<Lap>) {
-        if !lap.is_valid() {
-            return;
-        }
-        self.last_valid = Some(lap);
-        if matches!(self.phase, Phase::WaitingForLap) {
-            self.start_choosing();
-        }
-    }
-
     fn on_sample(&mut self, s: &Sample) {
-        let Phase::Practicing(focus) = &mut self.phase else {
+        // A new reference changes the track map: start over.
+        let Some(analyzer) = self.deps.triggers.analyzer() else {
+            if self.track.take().is_some() {
+                self.queue.clear();
+                self.publish();
+            }
             return;
         };
-        let Some(pass) = focus.capture.push(s) else {
+        if self
+            .track
+            .as_ref()
+            .is_none_or(|t| !Arc::ptr_eq(&t.analyzer, &analyzer))
+        {
+            self.track = Some(Track::new(analyzer));
+            self.queue.clear();
+            self.publish();
+        }
+        let track = self.track.as_mut().expect("track set above");
+        let done: Vec<(usize, Pass)> = track
+            .captures
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, c)| c.push(s).map(|p| (i, p)))
+            .collect();
+        for (i, pass) in done {
+            self.on_pass(i, pass);
+        }
+    }
+
+    fn on_pass(&mut self, i: usize, pass: Pass) {
+        let Some(track) = self.track.as_mut() else {
             return;
         };
-        // A new reference changes the track map: the corners no longer apply.
-        if !self
+        let Some(cmp) = track.analyzer.compare_pass(&pass) else {
+            return;
+        };
+        let turn = &mut track.turns[i];
+        let previous_best = turn.best();
+        let result = PassResult {
+            number: turn.passes.len() as u32 + 1,
+            lap: pass.lap,
+            corner: cmp.corners[i].clone(),
+            off_track: pass.off_track,
+            after_reset: pass.after_reset,
+        };
+        tracing::info!(
+            "{} pass {}: {:+.3} s{}{}",
+            turn.label,
+            result.number,
+            result.loss(),
+            if result.after_reset {
+                " (after a reset)"
+            } else {
+                ""
+            },
+            if result.off_track { " (off track)" } else { "" }
+        );
+        // Working on a turn from a save point: its time, at once.
+        if result.after_reset {
+            let sentence = format!(
+                "{}. {}",
+                capitalize(&spoken_corners(
+                    self.deps.language,
+                    std::slice::from_ref(&turn.label)
+                )),
+                attempt_sentence(
+                    self.deps.language,
+                    result.loss(),
+                    previous_best,
+                    result.off_track
+                )
+            );
+            self.deps.triggers.say(sentence, SayWhen::Now);
+        }
+        turn.passes.push(result);
+        if self.enabled.load(Ordering::Relaxed) && !self.queue.contains(&i) {
+            self.queue.push_back(i);
+        }
+        if self.turn.is_none() {
+            self.send_batch();
+        }
+        self.publish();
+    }
+
+    /// Sends the oldest queued turns to the race engineer.
+    fn send_batch(&mut self) {
+        if !self.enabled.load(Ordering::Relaxed) {
+            self.queue.clear();
+            return;
+        }
+        let Some(track) = self.track.as_ref() else {
+            return;
+        };
+        let n = self.policy.max_batch.max(1).min(self.queue.len());
+        if n == 0 {
+            return;
+        }
+        let corners: Vec<usize> = self.queue.drain(..n).collect();
+        let settings = self
             .deps
             .triggers
-            .analyzer()
-            .is_some_and(|a| Arc::ptr_eq(&a, &focus.analyzer))
-        {
-            self.phase = Phase::WaitingForLap;
-            self.publish();
-            return;
-        }
-        let Some(cmp) = focus.analyzer.compare_pass(&pass) else {
-            return;
-        };
-        let corners: Vec<CornerComparison> = focus
-            .corners
-            .iter()
-            .map(|&i| cmp.corners[i].clone())
-            .collect();
-        let loss: f64 = corners.iter().map(|c| c.time_delta).sum();
-        let previous_best = focus
-            .attempts
-            .iter()
-            .filter(|a| !a.off_track)
-            .map(|a| a.loss)
-            .min_by(f64::total_cmp)
-            .or(focus.baseline_s());
-        let number = focus.attempts.len() as u32 + 1;
-        tracing::info!(
-            "focus {}: attempt {number}, {loss:+.3} s{}",
-            focus.labels.join(", "),
-            if pass.off_track { " (off track)" } else { "" }
-        );
-        focus.attempts.push(Attempt {
-            number,
-            lap: pass.lap,
-            corners,
-            loss,
-            off_track: pass.off_track,
-        });
-        // The time, at once: the race engineer's advice follows.
-        self.deps.triggers.say(
-            attempt_sentence(self.deps.language, loss, previous_best, pass.off_track),
-            SayWhen::Now,
-        );
-        let history: Vec<Option<f64>> = focus
-            .attempts
-            .iter()
-            .map(|a| (!a.off_track).then_some(a.loss))
-            .collect();
-        if let Some(exit) = verdict(&history, &self.policy) {
-            self.leave_focus(exit);
-        } else if self.turn.is_none() {
-            self.send_attempt();
-        }
-        self.publish();
-    }
-
-    fn on_command(&mut self, c: FocusCommand) {
-        if matches!(self.phase, Phase::Off) {
-            return;
-        }
-        match c {
-            FocusCommand::Set {
-                corners,
-                announcement,
-            } => self.set_focus(corners, announcement),
-            FocusCommand::Next { reason } => {
-                if matches!(self.phase, Phase::Practicing(_)) {
-                    self.leave_focus(Exit::Asked(reason));
-                } else if matches!(self.phase, Phase::WaitingForLap) {
-                    self.start_choosing();
-                }
-            }
-        }
-        self.publish();
-    }
-
-    fn set_focus(&mut self, corners: Vec<usize>, announcement: Option<String>) {
-        let Some(analyzer) = self.deps.triggers.analyzer() else {
-            self.error("no reference lap");
-            return;
-        };
-        let Some(window) = analyzer.window_for(&corners) else {
-            return;
-        };
-        let labels: Vec<String> = corners
-            .iter()
-            .filter_map(|&i| analyzer.model.corners.get(i).map(|c| c.label()))
-            .collect();
-        let baseline = self.last_valid.as_ref().map(|lap| {
-            let cmp = analyzer.compare(lap);
-            (
-                lap.number,
-                corners.iter().map(|&i| cmp.corners[i].time_delta).collect(),
-            )
-        });
-        // No cue waits before the corners: the advice is spoken as soon as
-        // each analysis ends, which also tells the driver to go again.
-        self.deps.triggers.set_coach_plan(Plan::default());
-        let text = announcement.unwrap_or_else(|| announce(self.deps.language, &labels));
-        self.deps.triggers.say(text, SayWhen::Now);
-        tracing::info!("focus: {}", labels.join(", "));
-        self.phase = Phase::Practicing(Box::new(Focus {
-            corners,
-            labels,
-            capture: PassCapture::new(window),
-            analyzer,
-            baseline,
-            attempts: vec![],
-            analyzed: 0,
-        }));
-    }
-
-    fn leave_focus(&mut self, exit: Exit) {
-        let Phase::Practicing(focus) = std::mem::replace(&mut self.phase, Phase::WaitingForLap)
-        else {
-            return;
-        };
-        let best = focus
-            .attempts
-            .iter()
-            .filter(|a| !a.off_track)
-            .map(|a| a.loss)
-            .min_by(f64::total_cmp);
-        let from = focus
-            .baseline_s()
-            .map(|b| format!("{b:+.2} s → "))
+            .current_plan()
+            .map(|(_, p)| p.settings)
             .unwrap_or_default();
-        self.finished.push(format!(
-            "{}: {from}{} in {} attempts ({})",
-            focus.labels.join(", "),
-            best.map(|b| format!("{b:+.2} s"))
-                .unwrap_or("no clean pass".into()),
-            focus.attempts.len(),
-            exit.label()
-        ));
-        self.done_labels.extend(focus.labels.iter().cloned());
-        tracing::info!("focus {} left: {}", focus.labels.join(", "), exit.label());
-        self.deps.triggers.set_coach_plan(Plan::default());
-        self.deps.triggers.say(
-            exit_sentence(self.deps.language, &focus.labels, &exit),
-            SayWhen::Now,
+        let windows = triggers::speaking_windows(&track.analyzer, &settings);
+        let prompt = turns_prompt(
+            track,
+            &corners,
+            &windows,
+            self.deps.triggers.coach_plan().as_ref(),
         );
-        self.start_choosing();
-    }
-
-    fn start_choosing(&mut self) {
-        if self.last_valid.is_none() {
-            self.phase = Phase::WaitingForLap;
-            return;
-        }
-        self.phase = Phase::Choosing;
-        if self.turn.is_some() {
-            self.choose_pending = true;
-        } else {
-            self.send_choose();
-        }
-    }
-
-    fn send_choose(&mut self) {
-        self.choose_pending = false;
-        let Some(lap) = self.last_valid.clone() else {
-            self.phase = Phase::WaitingForLap;
-            return;
-        };
-        let Some(analyzer) = self.deps.triggers.analyzer() else {
-            self.error("no reference lap");
-            self.phase = Phase::WaitingForLap;
-            return;
-        };
-        let overview = mcp::tools::session_overview(&(self.deps.snapshot)(), Some(&analyzer));
-        let prompt = choose_prompt(&lap, analyzer.reference.lap_time, &overview, &self.finished);
-        self.prompt(TurnKind::Choose, format!("Lap {}", lap.number), prompt);
-    }
-
-    fn send_attempt(&mut self) {
-        let Phase::Practicing(focus) = &mut self.phase else {
-            return;
-        };
-        let Some(last) = focus.attempts.last() else {
-            return;
-        };
-        if last.number <= focus.analyzed {
-            return;
-        }
-        let prompt = attempt_prompt(focus);
-        let title = format!("{} attempt {}", focus.labels.join(", "), last.number);
-        focus.analyzed = last.number;
-        self.prompt(TurnKind::Attempt, title, prompt);
-    }
-
-    fn prompt(&mut self, kind: TurnKind, title: String, text: String) {
-        let id = self.deps.agent.prompt(text);
+        let title = corners
+            .iter()
+            .map(|&i| track.turns[i].label.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let id = self.deps.agent.prompt(prompt);
         {
             let mut s = self.status.lock().unwrap();
             s.running = Some(title.clone());
@@ -549,7 +374,7 @@ impl Loop {
         }
         self.turn = Some(Turn {
             id,
-            kind,
+            corners,
             title,
             started: Instant::now(),
             text: String::new(),
@@ -582,66 +407,16 @@ impl Loop {
                         secs: t.started.elapsed().as_secs_f64(),
                     });
                 }
-                // The race engineer did not choose: take the most costly
-                // corner not worked on yet.
-                if matches!(t.kind, TurnKind::Choose) && matches!(self.phase, Phase::Choosing) {
-                    self.fallback_choice();
-                }
-                // The advice, as soon as it is known: it also tells the driver
-                // to reset and go again. Not once the corners were left.
-                if matches!(t.kind, TurnKind::Attempt)
-                    && matches!(self.phase, Phase::Practicing(_))
-                    && let Some(advice) = spoken_advice(&t.text)
-                {
-                    self.deps.triggers.say(advice, SayWhen::Now);
-                }
-                self.next_turn();
+                self.send_batch();
                 self.publish();
             }
             CoachEvent::Status(AgentStatus::Failed(err)) => {
                 self.turn = None;
                 self.error(&err);
+                self.publish();
             }
             CoachEvent::Error(err) => self.error(&err),
             _ => {}
-        }
-    }
-
-    /// Sends what waited for the end of the turn.
-    fn next_turn(&mut self) {
-        if self.turn.is_some() {
-            return;
-        }
-        if self.choose_pending && matches!(self.phase, Phase::Choosing) {
-            self.send_choose();
-        } else if matches!(self.phase, Phase::Practicing(_)) {
-            self.send_attempt();
-        }
-    }
-
-    fn fallback_choice(&mut self) {
-        let (Some(lap), Some(analyzer)) = (self.last_valid.clone(), self.deps.triggers.analyzer())
-        else {
-            self.phase = Phase::WaitingForLap;
-            return;
-        };
-        let cmp = analyzer.compare(&lap);
-        let pick = cmp
-            .ranked()
-            .into_iter()
-            .find(|c| {
-                c.time_delta > self.policy.collapse_s && !self.done_labels.contains(&c.label())
-            })
-            .and_then(|c| {
-                analyzer
-                    .model
-                    .corners
-                    .iter()
-                    .position(|k| k.label() == c.label())
-            });
-        match pick {
-            Some(i) => self.set_focus(vec![i], None),
-            None => self.phase = Phase::WaitingForLap,
         }
     }
 
@@ -653,37 +428,26 @@ impl Loop {
 
     /// Shares the state with the screens, the MCP tools and the conversation.
     fn publish(&self) {
-        let mut st = FocusStatus {
-            finished: self.finished.clone(),
-            analyzing: self.turn.is_some(),
-            ..Default::default()
-        };
-        match &self.phase {
-            Phase::Off => st.phase = FocusPhase::Off,
-            Phase::WaitingForLap => st.phase = FocusPhase::WaitingForLap,
-            Phase::Choosing => st.phase = FocusPhase::Choosing,
-            Phase::Practicing(f) => {
-                st.phase = FocusPhase::Practicing;
-                st.corners = f.labels.clone();
-                st.baseline_s = f.baseline_s();
-                st.attempts = f
-                    .attempts
+        let analyzing: &[usize] = self.turn.as_ref().map(|t| &t.corners[..]).unwrap_or(&[]);
+        let turns = self
+            .track
+            .as_ref()
+            .map(|t| {
+                t.turns
                     .iter()
-                    .map(|a| FocusAttempt {
-                        number: a.number,
-                        lap: a.lap,
-                        loss_s: a.loss,
-                        corners: a
-                            .corners
-                            .iter()
-                            .map(|c| (c.label(), c.time_delta))
-                            .collect(),
-                        off_track: a.off_track,
+                    .enumerate()
+                    .map(|(i, h)| TurnStatus {
+                        corner: h.label.clone(),
+                        passes: h.passes.len() as u32,
+                        last_s: h.last_clean(),
+                        best_s: h.best(),
+                        queued: self.queue.contains(&i),
+                        analyzing: analyzing.contains(&i),
                     })
-                    .collect();
-            }
-        }
-        *self.deps.link.status.lock().unwrap() = st;
+                    .collect()
+            })
+            .unwrap_or_default();
+        *self.deps.link.lock().unwrap() = CoachingStatus { turns };
     }
 }
 
@@ -697,39 +461,9 @@ fn last_line(text: &str) -> String {
         .to_string()
 }
 
-fn lap_time(secs: f64) -> String {
-    let ms = (secs * 1000.0).round() as u64;
-    format!("{}:{:02}.{:03}", ms / 60_000, (ms / 1000) % 60, ms % 1000)
-}
-
-/// Message asking the race engineer to choose the focus corners.
-pub fn choose_prompt(
-    lap: &Lap,
-    reference_time: f64,
-    overview: &serde_json::Value,
-    finished: &[String],
-) -> String {
-    format!(
-        "[Focus] Choose the corners to work on.\n\
-         Lap {} completed in {} ({:+.3} s on the reference).\n\
-         Overview (get_session_overview): {}\n\
-         Already worked on this session: {}\n\
-         Pick one corner, or two consecutive corners when they are linked, where the most time can be gained and that were not worked on yet. Call set_focus with them and an announcement: the corners and the first thing to change, one or two short sentences, spoken to the driver at once. Do not place cues with update_plan. Finish with one summary sentence for the log.",
-        lap.number,
-        lap_time(lap.lap_time),
-        lap.lap_time - reference_time,
-        overview,
-        if finished.is_empty() {
-            "nothing yet".into()
-        } else {
-            finished.join("; ")
-        },
-    )
-}
-
-/// What one corner of a pass did differently from the reference.
+/// What one pass through a corner did differently from the reference.
 pub fn corner_line(c: &CornerComparison) -> String {
-    let mut parts = vec![format!("{} {:+.2} s", c.label(), c.time_delta)];
+    let mut parts = vec![format!("{:+.2} s", c.time_delta)];
     if let Some(d) = c.brake_point_delta_m {
         parts.push(format!("brake point {d:+.0} m"));
     }
@@ -758,73 +492,74 @@ pub fn corner_line(c: &CornerComparison) -> String {
     parts.join(", ")
 }
 
-fn attempt_prompt(focus: &Focus) -> String {
-    let last = focus.attempts.last().expect("an attempt");
-    let fresh: Vec<&Attempt> = focus
-        .attempts
+/// Message sending the latest pass through each of `corners` to the race
+/// engineer.
+fn turns_prompt(
+    track: &Track,
+    corners: &[usize],
+    windows: &[(String, Option<f64>)],
+    coach_plan: Option<&Plan>,
+) -> String {
+    let lines: Vec<String> = corners
         .iter()
-        .filter(|a| a.number > focus.analyzed)
-        .collect();
-    let earlier: Vec<String> = focus
-        .attempts
-        .iter()
-        .filter(|a| a.number < last.number)
-        .map(|a| {
-            format!(
-                "{}: {:+.2} s{}",
-                a.number,
-                a.loss,
-                if a.off_track { " (off track)" } else { "" }
-            )
+        .filter_map(|&i| {
+            let h = &track.turns[i];
+            let last = h.passes.last()?;
+            let earlier: Vec<String> = h.passes[..h.passes.len() - 1]
+                .iter()
+                .rev()
+                .take(5)
+                .rev()
+                .map(|p| {
+                    format!(
+                        "{:+.2}{}",
+                        p.loss(),
+                        if p.off_track { " (off track)" } else { "" }
+                    )
+                })
+                .collect();
+            let best = h
+                .best()
+                .map(|b| format!(", best {b:+.2} s"))
+                .unwrap_or_default();
+            let id = format!("auto-{}", h.label);
+            let cue = coach_plan
+                .and_then(|p| p.triggers.iter().find(|t| t.id.as_deref() == Some(&id)))
+                .map(|t| format!("\"{}\"", t.text))
+                .unwrap_or_else(|| "none".into());
+            let window = windows
+                .iter()
+                .find(|(l, _)| *l == h.label)
+                .and_then(|(_, w)| *w)
+                .map(|w| format!("{w:.1} s (about {} characters)", triggers::max_chars(w)))
+                .unwrap_or_else(|| "no braking zone, keep it very short".into());
+            Some(format!(
+                "{label}, pass {n} (lap {lap}{reset}{off}): {detail}. Earlier passes: {earlier}{best}. Cue now: {cue}. Speaking time before {label}: {window}.",
+                label = h.label,
+                n = last.number,
+                lap = last.lap,
+                reset = if last.after_reset {
+                    ", after a reset"
+                } else {
+                    ""
+                },
+                off = if last.off_track { ", off track" } else { "" },
+                detail = corner_line(&last.corner),
+                earlier = if earlier.is_empty() {
+                    "none".into()
+                } else {
+                    earlier.join(", ")
+                },
+            ))
         })
         .collect();
-    let detail: Vec<String> = fresh
-        .iter()
-        .map(|a| {
-            format!(
-                "Attempt {} (lap {}): {:+.2} s{}. {}",
-                a.number,
-                a.lap,
-                a.loss,
-                if a.off_track { ", off track" } else { "" },
-                a.corners
-                    .iter()
-                    .map(corner_line)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )
-        })
-        .collect();
-    let start = match &focus.baseline {
-        Some((lap, v)) => format!("{:+.2} s on lap {lap}", v.iter().sum::<f64>()),
-        None => "unknown".into(),
-    };
     format!(
-        "[Attempt {} on {}] Pass analyzed right after the last focus corner.\n\
+        "[Turns] Passes analyzed right after each turn.\n\
          {}\n\
-         Conventions: loss > 0 = slower than the reference; brake point, throttle on and turn-in > 0 = later; min speed < 0 = slower; radius < 1 = tighter line; steering > 1 = more steering.\n\
-         Start: {start}. Earlier attempts: {}.\n\
-         The driver has already heard the time.\n\
-         Reply with the advice for the next attempt only: one short sentence, under 60 characters, the action and a quantity. Your reply is spoken to the driver as soon as you finish, which tells them to go again. If nothing changes, say so in a few words (\"Same again, it's working.\"). If these corners have nothing more to give, call next_focus and reply with a few words.",
-        last.number,
-        focus.labels.join(", "),
-        detail.join("\n"),
-        if earlier.is_empty() {
-            "none".into()
-        } else {
-            earlier.join(", ")
-        },
+         Conventions: time > 0 = slower than the reference over the turn; brake point, throttle on and turn-in > 0 = later; min speed < 0 = slower; radius < 1 = tighter line; steering > 1 = more steering.\n\
+         For each of these turns, keep its cue if the advice still holds. Otherwise call update_plan once, with mode \"add\" and one cue per turn to change: id \"auto-T5\", corner \"T5\", anchor \"braking\", offset_m -300, text under the given length. A cue is spoken before its turn on the next pass, also right after a reset. Finish with one summary line for the log.",
+        lines.join("\n"),
     )
-}
-
-/// The race engineer's reply to an attempt, as spoken: the last line, without
-/// quotes or markup.
-fn spoken_advice(reply: &str) -> Option<String> {
-    let line = last_line(reply);
-    let line = line
-        .trim_matches(|c: char| c == '"' || c == '*' || c == '`' || c == '“' || c == '”')
-        .trim();
-    (!line.is_empty()).then(|| line.to_string())
 }
 
 /// "T5" → "turn 5"; two corners → "turns 5 and 6".
@@ -857,7 +592,7 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// Spoken right after a pass: the time against the reference and the trend.
+/// Spoken after a pass: the time against the reference and the trend.
 pub fn attempt_sentence(
     lang: Language,
     loss: f64,
@@ -901,57 +636,11 @@ pub fn attempt_sentence(
     format!("{}{trend}.", capitalize(&time))
 }
 
-/// Default announcement of the focus corners.
-pub fn announce(lang: Language, labels: &[String]) -> String {
-    let c = spoken_corners(lang, labels);
-    if lang == Language::French {
-        format!("On travaille le {c}.")
-    } else {
-        format!("Let's work on {c}.")
-    }
-}
-
-/// Spoken when leaving the focus corners.
-pub fn exit_sentence(lang: Language, labels: &[String], exit: &Exit) -> String {
-    let c = spoken_corners(lang, labels);
-    match (lang == Language::French, exit) {
-        (false, Exit::GapClosed) => capitalize(&format!("{c}: gap closed, moving on.")),
-        (false, Exit::Asked(_)) => "OK, moving on.".into(),
-        (false, _) => format!("That's it for {c} for now."),
-        (true, Exit::GapClosed) => capitalize(&format!("{c} : écart comblé, on passe à la suite.")),
-        (true, Exit::Asked(_)) => "D'accord, on passe à autre chose.".into(),
-        (true, _) => format!("On s'arrête là pour le {c}."),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn verdict_rules() {
-        let p = PlannerPolicy::default();
-        assert_eq!(verdict(&[Some(0.30), Some(0.20)], &p), None);
-        assert_eq!(
-            verdict(&[Some(0.30), Some(0.04)], &p),
-            Some(Exit::GapClosed)
-        );
-        assert_eq!(verdict(&[Some(-0.1)], &p), Some(Exit::GapClosed));
-        // Off track does not close the gap.
-        assert_eq!(verdict(&[Some(0.30), None], &p), None);
-        // Best 0.20 before, then three attempts that do not beat 0.17.
-        assert_eq!(
-            verdict(&[Some(0.20), Some(0.19), Some(0.25), Some(0.18)], &p),
-            Some(Exit::NoProgress)
-        );
-        // Still improving.
-        assert_eq!(
-            verdict(&[Some(0.30), Some(0.25), Some(0.20), Some(0.15)], &p),
-            None
-        );
-        let many = vec![Some(0.3); 12];
-        assert!(verdict(&many, &p).is_some());
-    }
+    use telemetry::synthetic::SyntheticTrack;
+    use telemetry::{CornerDetectionParams, Lap, LapFlags, TrackSurface};
 
     #[test]
     fn sentences() {
@@ -975,48 +664,66 @@ mod tests {
             attempt_sentence(fr, 0.31, Some(0.4), false),
             "3 dixièmes de retard, meilleur passage."
         );
-        let two = vec!["T5".to_string(), "T6".to_string()];
-        assert_eq!(announce(en, &two), "Let's work on turns 5 and 6.");
-        assert_eq!(announce(fr, &two[..1]), "On travaille le virage 5.");
         assert_eq!(
-            exit_sentence(en, &two, &Exit::GapClosed),
-            "Turns 5 and 6: gap closed, moving on."
+            capitalize(&spoken_corners(en, &["T5".into(), "T6".into()])),
+            "Turns 5 and 6"
         );
+        assert_eq!(spoken_corners(fr, &["T5".into()]), "virage 5");
+    }
+
+    fn lap_from(samples: Vec<Sample>) -> Lap {
+        Lap {
+            number: 1,
+            start_time: samples[0].session_time,
+            lap_time: samples.len() as f64 / 60.0,
+            flags: LapFlags {
+                complete: true,
+                ..Default::default()
+            },
+            samples,
+        }
     }
 
     #[test]
-    fn choose_prompt_lists_overview_and_finished_corners() {
-        let lap = Lap {
-            number: 4,
-            start_time: 0.0,
-            lap_time: 83.456,
-            flags: Default::default(),
-            samples: vec![],
-        };
-        let p = choose_prompt(
-            &lap,
-            83.0,
-            &serde_json::json!({"x": 1}),
-            &["T2: +0.30 s → +0.04 s in 3 attempts (gap closed)".into()],
-        );
-        assert!(p.starts_with("[Focus] Choose the corners to work on."));
-        assert!(p.contains("Lap 4 completed in 1:23.456 (+0.456 s"));
-        assert!(p.contains("{\"x\":1}"));
-        assert!(p.contains("T2: +0.30 s"));
-        assert!(p.contains("set_focus"));
-        assert!(p.contains("Do not place cues"));
-    }
-
-    #[test]
-    fn advice_is_the_last_line_without_markup() {
-        assert_eq!(
-            spoken_advice("Looking at it.\n\n\"Brake five meters later.\"\n").as_deref(),
-            Some("Brake five meters later.")
-        );
-        assert_eq!(
-            spoken_advice("**Same again.**").as_deref(),
-            Some("Same again.")
-        );
-        assert_eq!(spoken_advice("  \n "), None);
+    fn prompt_lists_each_turn_with_its_history_cue_and_room() {
+        let track = SyntheticTrack::demo();
+        let a = Arc::new(Analyzer::new(
+            &lap_from(track.simulate_lap(1.0, 0.0, 0.0)),
+            Some(track.length_m()),
+            &CornerDetectionParams::default(),
+        ));
+        let mut t = Track::new(a.clone());
+        // Two passes through T4 at a slower pace, the second after a reset.
+        for (n, after_reset) in [(1, false), (2, true)] {
+            let mut caps = a.turn_captures();
+            for mut s in track.simulate_lap(0.95, 0.0, 0.0) {
+                s.is_on_track = true;
+                s.surface = TrackSurface::OnTrack;
+                if let Some(p) = caps[3].push(&s) {
+                    let cmp = a.compare_pass(&p).unwrap();
+                    t.turns[3].passes.push(PassResult {
+                        number: n,
+                        lap: 7,
+                        corner: cmp.corners[3].clone(),
+                        off_track: false,
+                        after_reset,
+                    });
+                }
+            }
+        }
+        assert_eq!(t.turns[3].passes.len(), 2);
+        let plan = Plan::parse(
+            "[[trigger]]\nid = \"auto-T4\"\ncorner = \"T4\"\ntext = \"Brake later.\"\n",
+        )
+        .unwrap();
+        let windows = vec![("T4".to_string(), Some(4.0))];
+        let p = turns_prompt(&t, &[3], &windows, Some(&plan));
+        assert!(p.starts_with("[Turns] Passes analyzed right after each turn."));
+        assert!(p.contains("T4, pass 2 (lap 7, after a reset): +"), "{p}");
+        assert!(p.contains("brake point"), "{p}");
+        assert!(p.contains("Earlier passes: +"), "{p}");
+        assert!(p.contains("Cue now: \"Brake later.\""), "{p}");
+        assert!(p.contains("about 52 characters"), "{p}");
+        assert!(p.contains("mode \"add\""), "{p}");
     }
 }

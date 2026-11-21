@@ -1,7 +1,8 @@
-//! End-to-end focus coaching: lap completed → the race engineer (fake agent)
-//! chooses a corner through the real MCP server (`set_focus`) → a pass through
-//! the corner is analyzed right after it → the attempt goes back to the race
-//! engineer, whose reply is spoken at once → `next_focus` starts a new choice.
+//! End-to-end turn-by-turn coaching: every turn is analyzed as soon as the
+//! car leaves it, the turns queue up while the race engineer (fake agent)
+//! works and are sent to it in batches, its `update_plan` call goes through
+//! the real MCP server, and a pass that starts from a reset inside a turn is
+//! analyzed too, its time spoken at once.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,13 +16,13 @@ use agent_client_protocol::v1::schema::{
 use agent_client_protocol::{Agent, Client, Responder, V1};
 use analysis::Analyzer;
 use coach::{AgentConfig, CoachAgent, McpEndpoint};
-use mcp::{CoachData, FocusCommand, FocusLink, FocusPhase, McpServerHandle};
+use mcp::{CoachData, CoachingLink, CoachingStatus, McpServerHandle};
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use telemetry::synthetic::SyntheticTrack;
-use telemetry::{CornerDetectionParams, Lap, LapFlags, LiveSnapshot, TelemetryEvent, TrackSurface};
+use telemetry::{CornerDetectionParams, Lap, LapFlags, LiveSnapshot, Sample, TrackSurface};
 use triggers::{Plan, SayWhen, SpeechOutput, TriggerRuntime};
 use ui::planner::{Planner, PlannerDeps, PlannerPolicy};
 
@@ -38,13 +39,12 @@ impl SpeechOutput for Mute {
 }
 
 struct Data {
-    snap: LiveSnapshot,
     triggers: Arc<TriggerRuntime>,
-    focus: FocusLink,
+    coaching: CoachingLink,
 }
 impl CoachData for Data {
     fn snapshot(&self) -> LiveSnapshot {
-        self.snap.clone()
+        LiveSnapshot::default()
     }
     fn analyzer(&self) -> Option<Arc<Analyzer>> {
         self.triggers.analyzer()
@@ -58,13 +58,13 @@ impl CoachData for Data {
     fn say(&self, t: String, w: SayWhen) {
         self.triggers.say(t, w)
     }
-    fn focus(&self) -> Option<FocusLink> {
-        Some(self.focus.clone())
+    fn coaching(&self) -> Option<CoachingStatus> {
+        Some(self.coaching.lock().unwrap().clone())
     }
 }
 
-fn lap(samples: Vec<telemetry::Sample>, number: i32) -> Arc<Lap> {
-    Arc::new(Lap {
+fn lap(samples: Vec<Sample>, number: i32) -> Lap {
+    Lap {
         number,
         start_time: samples[0].session_time,
         lap_time: samples.len() as f64 / 60.0,
@@ -73,9 +73,11 @@ fn lap(samples: Vec<telemetry::Sample>, number: i32) -> Arc<Lap> {
             ..Default::default()
         },
         samples,
-    })
+    }
 }
 
+/// A slow race engineer (300 ms per turn, so that turns queue up): it places
+/// a cue on T4 whenever T4 is in the message.
 fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::ConnectTo<Client> {
     let mcp: Arc<Mutex<Option<(String, String)>>> = Arc::default();
     let mcp2 = mcp.clone();
@@ -108,47 +110,40 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
             async move |req: PromptRequest,
                         r: Responder<PromptResponse, V1>,
                         cx: ConnectionTo<Client>| {
-                if let Some(ContentBlock::Text(t)) = req.prompt.first() {
-                    prompts.lock().unwrap().push(t.text.clone());
-                }
-                let (url, token) = mcp.lock().unwrap().clone().unwrap();
-                let sid = req.session_id.clone();
                 let prompt = match req.prompt.first() {
                     Some(ContentBlock::Text(t)) => t.text.clone(),
                     _ => String::new(),
                 };
+                prompts.lock().unwrap().push(prompt.clone());
+                let (url, token) = mcp.lock().unwrap().clone().unwrap();
+                let sid = req.session_id.clone();
                 tokio::spawn(async move {
-                    let transport = StreamableHttpClientTransport::from_config(
-                        StreamableHttpClientTransportConfig::with_uri(url).auth_header(token),
-                    );
-                    let client = ().serve(transport).await.unwrap();
-                    let call = |name: &'static str, args: serde_json::Value| {
-                        let client = &client;
-                        async move {
-                            let res = client
-                                .call_tool(
-                                    CallToolRequestParams::new(name)
-                                        .with_arguments(args.as_object().unwrap().clone()),
-                                )
-                                .await
-                                .unwrap();
-                            assert_ne!(res.is_error, Some(true), "{name}: {res:?}");
-                        }
-                    };
-                    let summary = if prompt.starts_with("[Focus]") {
-                        call(
-                            "set_focus",
-                            serde_json::json!({
-                                "corners": ["T4"], "announcement": "Hairpin focus: brake later."
-                            }),
-                        )
-                        .await;
-                        "T4: braking too early, focus set."
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let summary = if prompt.contains("T4, pass") {
+                        let transport = StreamableHttpClientTransport::from_config(
+                            StreamableHttpClientTransportConfig::with_uri(url).auth_header(token),
+                        );
+                        let client = ().serve(transport).await.unwrap();
+                        let args = serde_json::json!({
+                            "mode": "add",
+                            "triggers": [{
+                                "id": "auto-T4", "corner": "T4", "anchor": "braking",
+                                "offset_m": -300, "text": "Brake later."
+                            }]
+                        });
+                        let res = client
+                            .call_tool(
+                                CallToolRequestParams::new("update_plan")
+                                    .with_arguments(args.as_object().unwrap().clone()),
+                            )
+                            .await
+                            .unwrap();
+                        assert_ne!(res.is_error, Some(true), "{res:?}");
+                        let _ = client.cancel().await;
+                        "T4: braking too early, cue set."
                     } else {
-                        // The reply itself is the advice, spoken by the program.
-                        "\"Release the brake slower.\""
+                        "No change."
                     };
-                    let _ = client.cancel().await;
                     let u = SessionUpdate::AgentMessageChunk(ContentChunk::new(
                         ContentBlock::Text(TextContent::new(format!("Done.\n{summary}"))),
                     ));
@@ -162,15 +157,23 @@ fn analyst(prompts: Arc<Mutex<Vec<String>>>) -> impl agent_client_protocol::Conn
 }
 
 fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !ok() {
         assert!(Instant::now() < deadline, "timed out: {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
+fn on_track(mut s: Sample, lap: i32, t0: f64) -> Sample {
+    s.is_on_track = true;
+    s.surface = TrackSurface::OnTrack;
+    s.lap = lap;
+    s.session_time += t0;
+    s
+}
+
 #[test]
-fn focus_loop_chooses_analyzes_passes_and_moves_on() {
+fn every_turn_is_analyzed_queued_and_batched_also_after_a_reset() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -183,28 +186,22 @@ fn focus_loop_chooses_analyzes_passes_and_moves_on() {
         Some(track.length_m()),
         &CornerDetectionParams::default(),
     ));
+    let turns = analyzer.model.corners.len();
     let (_stx, srx) = crossbeam_channel::bounded(10);
     let triggers = Arc::new(TriggerRuntime::spawn(srx, Box::new(Mute)));
-    triggers.set_reference(Some(analyzer));
+    triggers.set_reference(Some(analyzer.clone()));
     triggers.set_plan(
         "driver",
         Plan::parse("[[trigger]]\nid = \"a\"\nposition = 0.1\ntext = \"Driver.\"").unwrap(),
     );
 
-    let done = lap(track.simulate_lap(0.95, 100.0, 0.0), 3);
-    let snap = LiveSnapshot {
-        laps: vec![done.clone()],
-        ..Default::default()
-    };
-    let (link, commands) = FocusLink::new();
+    let coaching = CoachingLink::default();
     let server = rt
         .block_on(McpServerHandle::start(Arc::new(Data {
-            snap: snap.clone(),
             triggers: triggers.clone(),
-            focus: link.clone(),
+            coaching: coaching.clone(),
         })))
         .unwrap();
-
     let prompts: Arc<Mutex<Vec<String>>> = Arc::default();
     let cfg = AgentConfig {
         label: "analysis".into(),
@@ -225,7 +222,7 @@ fn focus_loop_chooses_analyzes_passes_and_moves_on() {
         cfg,
         rt.handle(),
     ));
-    let (ltx, lrx) = crossbeam_channel::unbounded();
+    let (_ltx, lrx) = crossbeam_channel::unbounded();
     let (sample_tx, sample_rx) = crossbeam_channel::unbounded();
     let planner = Planner::spawn(
         PlannerDeps {
@@ -233,113 +230,96 @@ fn focus_loop_chooses_analyzes_passes_and_moves_on() {
             model: "sonnet".into(),
             laps: lrx,
             samples: sample_rx,
-            snapshot: Arc::new(move || snap.clone()),
             triggers: triggers.clone(),
-            link: link.clone(),
-            commands,
+            link: coaching.clone(),
             language: voice::Language::English,
         },
         PlannerPolicy::default(),
         true,
     );
-    wait_for("loop waiting for a lap", || {
-        planner.status().focus.phase == FocusPhase::WaitingForLap
-    });
 
-    // 1. A valid lap: the race engineer chooses T4.
-    ltx.send(TelemetryEvent::LapCompleted(done)).unwrap();
-    wait_for("focus on T4", || {
-        let f = planner.status().focus;
-        f.phase == FocusPhase::Practicing && f.corners == ["T4"]
-    });
-    let p = prompts.lock().unwrap()[0].clone();
-    assert!(
-        p.starts_with("[Focus] Choose the corners to work on."),
-        "{p}"
-    );
-    assert!(p.contains("Lap 3 completed in"), "{p}");
-    assert!(p.contains("time_lost_by_corner"), "overview attached");
-    let base = planner
-        .status()
-        .focus
-        .baseline_s
-        .expect("baseline from lap 3");
-    assert!(base > 0.0, "{base}");
-    wait_for("choice analyzed", || planner.status().analyses == 1);
-    assert_eq!(
-        planner.status().last.unwrap().text,
-        "T4: braking too early, focus set."
-    );
-
-    // 2. A pass through T4: analyzed right after the corner, before the end
-    // of the lap.
-    let pass = track.simulate_lap(0.97, 300.0, 0.0);
-    for mut s in pass {
-        s.is_on_track = true;
-        s.surface = TrackSurface::OnTrack;
-        s.lap = 4;
-        sample_tx.send(s).unwrap();
+    // 1. Two laps at a slower pace, sent at once: every turn is analyzed,
+    // the ones that finish while the race engineer works wait and go together.
+    let lap_s = track.simulate_lap(0.95, 0.0, 0.0);
+    let lap_time = lap_s.len() as f64 / 60.0;
+    for n in 0..2 {
+        for s in &lap_s {
+            sample_tx
+                .send(on_track(*s, n + 1, 100.0 + n as f64 * lap_time))
+                .unwrap();
+        }
     }
-    wait_for("attempt recorded", || {
-        !planner.status().focus.attempts.is_empty()
+    wait_for("every turn analyzed", || {
+        let c = planner.status().coaching;
+        c.turns.len() == turns
+            && c.turns
+                .iter()
+                .all(|t| t.passes >= 1 && !t.queued && !t.analyzing)
+            && planner.status().running.is_none()
     });
-    let attempt = planner.status().focus.attempts[0].clone();
-    assert_eq!(attempt.number, 1);
-    assert!(attempt.loss_s > 0.0 && attempt.loss_s < base, "{attempt:?}");
-    wait_for("attempt prompt", || prompts.lock().unwrap().len() == 2);
-    let p = prompts.lock().unwrap()[1].clone();
-    assert!(p.starts_with("[Attempt 1 on T4]"), "{p}");
-    assert!(p.contains("brake point"), "{p}");
-    assert!(p.contains("Start: +"), "{p}");
+    let all = prompts.lock().unwrap().clone();
+    for t in &analyzer.model.corners {
+        let needle = format!("{}, pass", t.label());
+        assert!(
+            all.iter().any(|p| p.contains(&needle)),
+            "{} never analyzed: {all:?}",
+            t.label()
+        );
+    }
+    assert!(all.iter().all(|p| p.starts_with("[Turns]")));
     assert!(
-        p.contains("spoken to the driver as soon as you finish"),
-        "{p}"
+        all.iter().any(|p| p.matches(", pass ").count() >= 2),
+        "turns batched while the race engineer works: {all:?}"
     );
-    wait_for("attempt analyzed", || planner.status().analyses == 2);
+    assert!(all.len() < 2 * turns, "{} messages", all.len());
+    let t4 = &planner.status().coaching.turns[3];
+    assert!(t4.last_s.unwrap() > 0.0 && t4.best_s.is_some(), "{t4:?}");
 
-    // The announcement, the time of the pass and the advice (the reply,
-    // without its quotes) were spoken at once (queued here: the trigger thread
-    // gets no samples).
-    wait_for("sentences queued", || {
-        let texts: Vec<String> = triggers
+    // The cue placed by the race engineer is in effect, next to the driver's.
+    wait_for("cue in effect", || {
+        triggers
             .status()
             .triggers
             .iter()
-            .map(|v| v.trigger.text.clone())
-            .collect();
-        [
-            "Hairpin focus: brake later.",
-            "tenth",
-            "Release the brake slower.",
-        ]
-        .iter()
-        .all(|w| texts.iter().any(|t| t == w || t.contains(w)))
-            && !texts.iter().any(|t| t.starts_with('"'))
+            .any(|v| v.trigger.id == "coach:auto-T4" && v.trigger.text == "Brake later.")
     });
-    // No cue waits before the corner: only the driver's plan is placed.
-    let ids: Vec<String> = triggers
-        .status()
-        .triggers
-        .iter()
-        .map(|v| v.trigger.id.clone())
-        .filter(|id| !id.starts_with("say-"))
-        .collect();
-    assert_eq!(ids, vec!["a"]);
-    assert_eq!(
-        triggers.current_plan().unwrap().1.triggers.len(),
-        1,
-        "driver plan untouched"
-    );
+    assert_eq!(triggers.current_plan().unwrap().1.triggers.len(), 1);
 
-    // 3. The driver asks to move on: T4 is set aside and a new choice starts.
-    link.commands
-        .send(FocusCommand::Next {
-            reason: "the driver asked".into(),
+    // 2. A reset into T4's zone, before its braking point: a pass after the
+    // reset, its time spoken at once, sent to the race engineer marked as such.
+    let zone = analyzer.model.zones[3].clone();
+    let brake = analyzer.reference_metrics[3].brake_point_pct.unwrap();
+    let fwd = |a: f64, b: f64| (b - a).rem_euclid(1.0);
+    let halfway = (zone.start_pct + fwd(zone.start_pct, brake) / 2.0).rem_euclid(1.0);
+    let from = lap_s
+        .iter()
+        .position(|s| {
+            let u = fwd(zone.start_pct, s.lap_dist_pct as f64);
+            u >= fwd(zone.start_pct, halfway) && u < fwd(zone.start_pct, halfway) + 0.02
         })
         .unwrap();
-    wait_for("new choice", || prompts.lock().unwrap().len() == 3);
-    let p = prompts.lock().unwrap()[2].clone();
-    assert!(p.starts_with("[Focus]"), "{p}");
-    assert!(p.contains("T4: +"), "finished corners listed: {p}");
-    assert!(p.contains("(the driver asked)"), "{p}");
+    let before = prompts.lock().unwrap().len();
+    let passes_before = planner.status().coaching.turns[3].passes;
+    let t0 = 100.0 + 3.0 * lap_time;
+    for s in &lap_s[from..] {
+        sample_tx.send(on_track(*s, 3, t0)).unwrap();
+    }
+    wait_for("pass after the reset analyzed", || {
+        planner.status().coaching.turns[3].passes > passes_before
+            && prompts.lock().unwrap().len() > before
+            && planner.status().running.is_none()
+    });
+    let reset_prompt = prompts.lock().unwrap()[before..]
+        .iter()
+        .find(|p| p.contains("T4, pass"))
+        .cloned()
+        .expect("T4 sent again");
+    assert!(reset_prompt.contains("after a reset"), "{reset_prompt}");
+    wait_for("time spoken", || {
+        triggers
+            .status()
+            .triggers
+            .iter()
+            .any(|v| v.trigger.id.starts_with("say-") && v.trigger.text.starts_with("Turn 4."))
+    });
 }

@@ -54,8 +54,8 @@ pub struct ConversationDeps {
     pub input: Option<Arc<InputService>>,
     pub recorder: Option<Arc<dyn Microphone>>,
     pub listener: Option<Arc<Listener>>,
-    /// Focus coaching state, for the driver context.
-    pub focus: Option<mcp::FocusLink>,
+    /// Turn-by-turn coaching state, for the driver context.
+    pub coaching: Option<mcp::CoachingLink>,
 }
 
 pub struct Conversation {
@@ -149,8 +149,11 @@ fn run(
         let snap = deps.snapshot.get();
         let analyzer = deps.triggers.analyzer();
         let status = deps.triggers.status();
-        let focus = deps.focus.as_ref().and_then(|f| f.status().line());
-        let ctx = driver_context(&snap, analyzer.as_deref(), &status, focus);
+        let turns = deps
+            .coaching
+            .as_ref()
+            .and_then(|c| c.lock().unwrap().line());
+        let ctx = driver_context(&snap, analyzer.as_deref(), &status, turns);
         Some(agent.prompt(format_prompt(&ctx, text)))
     };
     let interrupt = |busy: bool| {

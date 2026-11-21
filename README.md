@@ -14,21 +14,21 @@ Voice pipeline: STT → Claude (via ACP) → TTS. STT and TTS run in-process wit
 | 4. MCP server and ACP client, text input | **done** |
 | 5. Push-to-talk STT, voice conversation | **done** |
 | 6. Automatic planning of the next lap | **done** |
-| 7. Focus coaching on one or two corners, coaching widget | **done** |
+| 7. Turn-by-turn coaching, coaching widget | **done** |
 
 ## Interface
 
-Three screens, switched with the tabs at the top:
+A dark, racing-telemetry look: near-black background, neon accents, square corners, and a condensed face (Bahnschrift, shipped with Windows). Three screens, switched with the tabs at the top:
 
-- **Coaching**: coach state lights (*Listening*, *Thinking*, *Speaking*, *Analyzing*, *Idle*), rolling level meters for the coach's voice and the microphone, the focus corners with the time of each attempt and a **Next** button, the reference lap with a quick **Load lap…** button, the live delta, the delta per corner (last lap, best lap, active cue) and the upcoming and last spoken cues. A cue too long for its straight is shown in red.
+- **Coaching**: one strip with the coach state (one at a time), the reference lap and its **Load lap** button, the lap and the live delta; then every turn with its latest pass, its best and its cue (◆ being analyzed, ◇ queued; the turn the car is in is highlighted; a cue too long for its straight is red); then the next cue, the last sentence spoken and the race engineer's last summary.
 - **Chat**: what a chat interface would show. The conversation (typed or spoken), the coach's tool calls, each analysis summary and the analysis session's tool calls, the laps, and the detailed corner metrics (braking, throttle, trail braking, rotation, coasting).
-- **Setup**: session, reference and plan files, voice settings (push-to-talk button, spoken replies, voice language, microphone, coach output and volume), focus coaching, the coaching widget, and the connection status (telemetry, STT, TTS, ACP agent, MCP server).
+- **Setup**: session, reference and plan files, voice settings (push-to-talk button, spoken replies, voice language, microphone, coach output and volume, level meters), turn analysis, the coaching widget, and the connection status (telemetry, STT, TTS, ACP agent, MCP server).
 
-The **coaching widget** is a separate window of four lines (380 × 92 px by default), with no title bar, border, shadow or taskbar entry, kept on top of the game:
+The **coaching widget** is a separate window of three lines (380 × 72 px by default), with no title bar, border, shadow or taskbar entry, kept on top of the game:
 
-- the coach state, one at a time (*Listening*, *Speaking*, *Thinking*, *Analyzing* or *Idle*), and the focus corners with the number of tries;
-- **Gain**, highlighted: the time still to gain on the focus corners and the best try, or, outside focus coaching, the three corners where the last lap lost the most;
-- the next cue and the last sentence spoken.
+- the coach state, one at a time (*Listening*, *Speaking*, *Thinking*, *Analyzing* or *Idle*), also as a colored bar on the left edge, and the turns with the most time to gain ("T4 +0.31 · T2 +0.20");
+- the next cue;
+- the last sentence spoken.
 
 Drag it anywhere on its surface to move it, and by the grip in its bottom-right corner to resize it; it reopens where and as it was left. The **Widget** button in the tab bar opens and closes it (the choice is saved). With the Setup option *Open the widget automatically while iRacing is running* (on by default), it opens as soon as the live iRacing telemetry connects and closes when iRacing stops; opening or closing it by hand always wins. Closing the main window closes the widget. It works over a borderless or windowed game, not over exclusive fullscreen. Clicking the widget gives it the keyboard focus, as any window: click back into iRacing after moving it.
 
@@ -122,11 +122,13 @@ Available conditions: `speed_above_kmh`, `speed_below_kmh`, `delta_above`, `delt
 
 Engine rules:
 
-- a cue is armed when the car crosses its position and its condition holds, then spoken as soon as a slot frees up;
-- **no speech in braking zones**: nothing starts during braking (pedal above 5 %) or inside a quiet zone (from 30 m before the reference braking point to the apex, adjustable), and a sentence in progress is cut off if the driver brakes;
-- a sentence is only started if it has time to be spoken before the next quiet zone, based on its actual duration (sentences are synthesized in advance) and the time the reference lap takes to cover that distance (the current speed alone overestimates it on a corner exit, where the car accelerates);
-- when a plan is loaded, the cues are placed so that they can all be spoken: the cues of one straight (between two quiet zones) are packed back to back to end before the braking zone, and a cue that would start too late is moved earlier on its straight. A cue that still does not fit is logged, shown in red, and reported to Claude by `update_plan` with the longest sentence that would fit;
+- a cue is armed when the car crosses its position and its condition holds, then spoken as soon as nobody is speaking, whatever the pedals do;
+- when a plan is loaded, the cues are placed so that they end before the braking zone (from 30 m before the reference braking point, `quiet_lead_m`): the cues of one straight are packed back to back, and a cue that would start too late is moved earlier on its straight. The time available is measured on the reference lap (the current speed overestimates it on a corner exit, where the car accelerates). A cue that still does not fit is logged, shown in red, and reported to Claude by `update_plan` with the longest sentence that would fit;
+- a cue is spoken once per **pass**, not per lap number: the line starts a new pass, and so does a reset to a save point (any jump in the track position; small backward jitter is ignored). After a reset that puts the car between a cue and its corner, the cue is spoken at once;
+- a one-off sentence (`say`, the time after a reset) survives a plan update until it is spoken;
 - among pending cues, the highest priority goes first; past its maximum delay (150 m by default), a cue is dropped (logged).
+
+The former rule *no speech in braking zones* is still available with `silence_in_braking = true` in the plan's `[settings]`: nothing then starts during braking (pedal above 5 %) or inside a quiet zone, a sentence only starts if it has time to end before the next quiet zone, and a sentence in progress is cut off if the driver brakes.
 
 To see what happens to each cue over a recorded session, without audio:
 
@@ -253,7 +255,7 @@ The session is opened at startup and kept warm:
 - Claude Code's built-in tools are removed (`tools: []`), only our MCP tools are allowed; any other permission request is denied;
 - the machine's Claude Code settings are ignored; thinking is disabled for the conversation.
 
-Each driver message is preceded by a `[Context]` block: lap, position, last and next corner, live delta, focus corners and latest attempts, last cues spoken.
+Each driver message is preceded by a `[Context]` block: lap, position, last and next corner, live delta, the turns being analyzed or queued and where the most time is still to gain, last cues spoken.
 
 MCP tools exposed (server `coach`, HTTP on `127.0.0.1`, ephemeral port, random Bearer token):
 
@@ -264,8 +266,6 @@ MCP tools exposed (server `coach`, HTTP on `127.0.0.1`, ephemeral port, random B
 | `get_corner_trace(corner, channels, lap)` | traces (at most 100 points per channel), lap and reference; channels include `radius` and `line_offset` |
 | `update_plan(triggers, mode)` | replaces (`replace`) or extends (`add`) the cue plan (validated before being applied); returns the speaking time each cue needs and has, and a warning for each cue that does not fit |
 | `say(text, when, corner, anchor, offset_m, position)` | one-off sentence: `now`, `next_straight` or at a `position` (corner + anchor + offset, or absolute position); always subject to the silence-under-braking rule |
-| `set_focus(corners, announcement)` | the corners the driver works on (one, or two consecutive); the announcement is spoken on the next straight |
-| `next_focus(reason)` | leaves the focus corners for the next finding |
 
 The interface shows the conversation, the tool calls with their duration, and the latency of the last speaking turn (first word) in the ACP agent indicator.
 
@@ -306,20 +306,24 @@ The Setup screen has a **Microphone** row (push-to-talk input) and a **Coach out
 
 If the saved device is not connected at startup, the program falls back to the system default and says so in the conversation. If a device cannot be opened when chosen, the previous one stays active.
 
-## Focus coaching
+## Turn-by-turn coaching
 
-A second ACP session, separate from the conversation, plays the race engineer (Sonnet by default, `--analysis-model`, thinking allowed). An analysis takes about 15 s: when it ran at the end of each lap, its cues arrived after the first corners of the next lap. The engineer works instead on one corner, or two consecutive corners, at a time, and each pass through them is analyzed as soon as the car leaves the last one:
+A second ACP session, separate from the conversation, plays the race engineer (Sonnet by default, `--analysis-model`, thinking allowed). An analysis takes about 15 s, too long to wait for the end of the lap: every turn is analyzed instead as soon as the car leaves it.
 
-1. **Waiting for a lap**: a complete, valid lap is needed.
-2. **Choosing**: the program sends the lap, the session overview (attached to the message to save a call) and the corners already worked on. Claude digs into the costly corners and calls `set_focus` with one or two corners and an announcement, spoken at once: the corners and the first thing to change. The driver can set a save point before the corners. If Claude chooses nothing, the program takes the most costly corner not worked on yet.
-3. **Practicing**: from the start of the first focus corner zone to the end of the last, each pass is recorded and compared to the reference right after the last corner (`Analyzer::compare_pass`). A pass can follow a reset in the sim, as long as it starts before the corners and has no jump. The program speaks the time at once ("Two tenths off, best yet."), then sends the pass to Claude. Claude's reply, the one correction for the next attempt, is spoken as soon as it arrives, which also tells the driver to reset and go again. No cue waits before the corners: the coach cue layer stays empty during focus coaching.
-4. **Moving on**: when the gap over the focus corners is 0.05 s or less, when the last three clean attempts do not beat the earlier best by 0.03 s, after 12 attempts, or when someone asks: the driver through the conversation ("let's work on something else" → `next_focus`, "let's do turn three" → `set_focus`), the **Next** button, or Claude itself. A new choice starts, with the corners already worked on set aside.
+1. **Each turn is recorded on its own**, over its zone (from the middle of the straight before to the middle of the straight after), and compared to the reference as soon as the car leaves it (`Analyzer::compare_pass`).
+2. **The turn joins a queue**, which keeps only its latest pass. When the race engineer is free, it receives the queued turns, up to four at a time: for each, the time lost or gained and what differed (brake point, minimum speed, throttle pickup, turn-in, coasting, radius, steering), the earlier passes and the best, the cue in place, and the speaking time before the turn.
+3. **It updates their cues** with `update_plan` (`add`, one cue per turn, id `auto-T5`). A cue is spoken before its turn on the next pass.
 
-The state (focus corners, attempts, best and starting time) is shown on the Coaching screen and in the widget, given to the conversation in the `[Context]` block, and returned by `get_session_overview`. Each analysis summary is added to the Chat log, with the analysis session's tool calls.
+The driver chooses how to work with it:
 
-The driver's plan (TOML file) is never modified: the coach cue layer is resolved separately and spoken with it. A cue unchanged from one plan to the next keeps its state (a `once` cue already spoken is not repeated). The loop blocks neither the fast loop nor the conversation. Each session has its own MCP endpoint, so the tool logs stay separate.
+- **full laps**: every turn has its cue, updated from the last pass through it;
+- **drills**: reset to a save point before a turn (or a sequence of turns) and drive it again. The cue of the turn ahead is spoken right after the reset; the pass counts from the reset point when the car lands inside the turn's zone before its braking point (the part of the zone before it counts as the reference); the time of the first turn after the reset is spoken as soon as the car leaves it ("Turn 4. Two tenths off, best yet."), then the race engineer updates the cue.
 
-The engineer's prompt is in `%LOCALAPPDATA%\simcoach\data\sessions\analysis\CLAUDE.md` (created from `crates/coach/prompts/ANALYSIS.md`; an unedited copy of an earlier version is upgraded). A toggle on the Setup screen (and on the Chat screen) enables or suspends focus coaching (the setting is saved).
+The state of each turn (passes, last, best, queued or being analyzed) is shown on the Coaching screen and in the widget, given to the conversation in the `[Context]` block, and returned by `get_session_overview`. Each analysis summary is added to the Chat log, with the analysis session's tool calls.
+
+The driver's plan (TOML file) is never modified: the coach cue layer is resolved separately and spoken with it. A cue unchanged from one plan to the next keeps its state. The loop blocks neither the fast loop nor the conversation. Each session has its own MCP endpoint, so the tool logs stay separate.
+
+The engineer's prompt is in `%LOCALAPPDATA%\simcoach\data\sessions\analysis\CLAUDE.md` (created from `crates/coach/prompts/ANALYSIS.md`; an unedited copy of an earlier version is upgraded). A toggle on the Setup screen (and on the Chat screen) enables or suspends the analysis (the setting is saved).
 
 To check the per-pass analysis on a recorded session (each pass through the corners, set against the same corners of the full laps):
 
@@ -327,4 +331,4 @@ To check the per-pass analysis on a recorded session (each pass through the corn
 cargo run -p analysis --example focus_passes -- session.ibt reference.csv [T5 [T6]]
 ```
 
-Cost: one analysis per choice and per attempt with Sonnet, on the subscription. Over a long session, this is the main quota consumer; `--no-planning` or turning the toggle off stops it.
+Cost: on full laps, one analysis for a few turns at a time with Sonnet, on the subscription; over a long session, this is the main quota consumer. `--no-planning` or turning the toggle off stops it.

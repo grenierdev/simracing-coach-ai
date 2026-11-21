@@ -1,12 +1,15 @@
-//! One pass through a few corners, compared to the reference without waiting
-//! for the end of the lap.
+//! One pass through a corner (or a few), compared to the reference without
+//! waiting for the end of the lap.
 //!
-//! The coach works on one or two corners at a time. As soon as the car leaves
-//! the last of them, the pass is compared to the reference: [`PassCapture`]
-//! records the samples between the start of the first corner zone and the end
-//! of the last one, and [`Analyzer::compare_pass`] splices them into the
-//! reference lap so that the usual per-corner metrics apply. A pass can follow
-//! a reset in the sim: it only needs to cover the window without a jump.
+//! Each corner is analyzed as soon as the car leaves it: [`PassCapture`]
+//! records the samples from the start of its zone (the middle of the straight
+//! before) to its end, and [`Analyzer::compare_pass`] splices them into the
+//! reference lap so that the usual per-corner metrics apply.
+//!
+//! Resets do not get in the way. A jump (reset to a save point, teleport)
+//! drops the pass in progress; if the car lands inside the zone before the
+//! corner's braking point, a new pass starts there, and the part of the zone
+//! before it counts as the reference.
 
 use telemetry::{Sample, TrackSurface};
 
@@ -16,10 +19,14 @@ use crate::{AlignedLap, Analyzer, LapComparison};
 /// Position step beyond which the car is considered to have jumped (reset,
 /// teleport), fraction of a lap.
 const MAX_STEP_PCT: f64 = 0.02;
+/// A backward step smaller than this is noise, not a reset, fraction of a lap.
+const JITTER_PCT: f64 = 0.002;
 /// Time gap beyond which the recording is considered interrupted, s.
 const MAX_GAP_S: f64 = 0.5;
 /// Tolerance on the coverage of the window ends, fraction of a lap.
 const EDGE_PCT: f64 = 0.005;
+/// Margin before the braking point for a pass to start after a reset, m.
+const RESTART_MARGIN_M: f64 = 20.0;
 
 /// A pass recorded through a window of the lap.
 #[derive(Debug, Clone)]
@@ -31,12 +38,17 @@ pub struct Pass {
     pub off_track: bool,
     /// Lap number when the pass ended.
     pub lap: i32,
+    /// The pass started after a reset, inside the window.
+    pub after_reset: bool,
 }
 
 /// Records passes through a window, one sample at a time.
 #[derive(Debug, Clone)]
 pub struct PassCapture {
     window: (f64, f64),
+    /// Latest position where a pass may start after a reset (`None`: only by
+    /// entering the window).
+    restart_before: Option<f64>,
     prev: Option<Sample>,
     current: Option<Pass>,
 }
@@ -50,9 +62,17 @@ impl PassCapture {
     pub fn new(window: (f64, f64)) -> Self {
         PassCapture {
             window: (window.0.rem_euclid(1.0), window.1.rem_euclid(1.0)),
+            restart_before: None,
             prev: None,
             current: None,
         }
+    }
+
+    /// After a reset that lands the car inside the window before `limit`
+    /// (pct), a pass starts there.
+    pub fn restart_before(mut self, limit: f64) -> Self {
+        self.restart_before = Some(limit.rem_euclid(1.0));
+        self
     }
 
     pub fn window(&self) -> (f64, f64) {
@@ -64,6 +84,13 @@ impl PassCapture {
         self.current.is_some()
     }
 
+    fn can_restart_at(&self, pct: f64) -> bool {
+        let (w0, w1) = self.window;
+        self.restart_before.is_some_and(|l| {
+            forward(w0, l) <= forward(w0, w1) && forward(w0, pct) <= forward(w0, l)
+        })
+    }
+
     /// Adds a sample; returns the pass when the car leaves the window.
     pub fn push(&mut self, s: &Sample) -> Option<Pass> {
         let pct = s.lap_dist_pct as f64;
@@ -72,12 +99,30 @@ impl PassCapture {
             self.current = None;
             return None;
         }
-        let prev = self.prev.replace(*s)?;
-        let p0 = prev.lap_dist_pct as f64;
-        let dt = s.session_time - prev.session_time;
-        if forward(p0, pct) >= MAX_STEP_PCT || dt > MAX_GAP_S || dt < 0.0 {
-            // Reset, teleport or a gap in the data: this pass is lost.
-            self.current = None;
+        let (restart, p0) = match self.prev.replace(*s) {
+            None => (true, pct),
+            Some(prev) => {
+                let p0 = prev.lap_dist_pct as f64;
+                let step = forward(p0, pct);
+                if step > 1.0 - JITTER_PCT {
+                    // A small step back: noise, the sample is skipped.
+                    self.prev = Some(prev);
+                    return None;
+                }
+                let dt = s.session_time - prev.session_time;
+                (step >= MAX_STEP_PCT || dt > MAX_GAP_S || dt < 0.0, p0)
+            }
+        };
+        if restart {
+            // Reset, teleport, back on track or a gap in the data: the pass in
+            // progress is lost; a new one starts here if it is early enough.
+            self.current = self.can_restart_at(pct).then(|| Pass {
+                window: self.window,
+                samples: vec![*s],
+                off_track: s.surface == TrackSurface::OffTrack,
+                lap: s.lap,
+                after_reset: true,
+            });
             return None;
         }
         if let Some(pass) = self.current.as_mut() {
@@ -94,6 +139,7 @@ impl PassCapture {
                 samples: vec![*s],
                 off_track: s.surface == TrackSurface::OffTrack,
                 lap: s.lap,
+                after_reset: false,
             });
         }
         None
@@ -119,8 +165,10 @@ fn interp(pts: &[(f64, f64)], x: f64) -> f64 {
 
 impl Analyzer {
     /// Compares a pass to the reference. The corners inside the window carry
-    /// the pass's metrics; the others are equal to the reference. `None` when
-    /// the samples do not cover the window.
+    /// the pass's metrics; the others are equal to the reference. A pass that
+    /// started after a reset counts as the reference before its first sample.
+    /// `None` when the samples do not reach the end of the window, or do not
+    /// start at its beginning (unless after a reset).
     pub fn compare_pass(&self, pass: &Pass) -> Option<LapComparison> {
         let (w0, w1) = pass.window;
         let span = forward(w0, w1);
@@ -139,9 +187,10 @@ impl Analyzer {
                 })
             })
             .collect();
-        if pts.len() < 10 || pts[0].0 > EDGE_PCT || last < span - EDGE_PCT {
+        if pts.len() < 10 || (!pass.after_reset && pts[0].0 > EDGE_PCT) || last < span - EDGE_PCT {
             return None;
         }
+        let first = pts[0].0;
         let channel = |f: fn(&Sample) -> f64| -> Vec<(f64, f64)> {
             pts.iter()
                 .map(|(x, s)| (*x, f(s)))
@@ -161,7 +210,11 @@ impl Analyzer {
         let n = r.n;
         let mut lap: AlignedLap = (**r).clone();
         lap.line = None;
-        let inside = |i: usize| u(i as f64 / n as f64) <= span;
+        // Covered by the pass: from its first sample to the window end.
+        let inside = |i: usize| {
+            let x = u(i as f64 / n as f64);
+            x >= first && x <= span
+        };
         let fill = |dst: &mut Vec<f64>, src: &[(f64, f64)]| {
             if src.is_empty() {
                 return;
@@ -241,6 +294,22 @@ impl Analyzer {
         let first = idx[start];
         let last = idx[(start + k - 1) % k];
         Some((zones[first].start_pct, zones[last].end_pct))
+    }
+
+    /// One capture per corner, over its zone. After a reset, a pass starts if
+    /// the car lands before the corner's braking point (or its start, when
+    /// the reference does not brake), with a small margin.
+    pub fn turn_captures(&self) -> Vec<PassCapture> {
+        let margin = RESTART_MARGIN_M / self.model.length_m.max(1.0);
+        self.model
+            .zones
+            .iter()
+            .zip(&self.reference_metrics)
+            .map(|(z, m)| {
+                let limit = m.brake_point_pct.unwrap_or(z.corner.start_pct) - margin;
+                PassCapture::new((z.start_pct, z.end_pct)).restart_before(limit)
+            })
+            .collect()
     }
 }
 
@@ -375,5 +444,63 @@ mod tests {
         let passes = capture(w, &reset_to(before));
         assert_eq!(passes.len(), 1);
         assert!(a.compare_pass(&passes[0]).is_some());
+    }
+
+    #[test]
+    fn a_reset_inside_the_zone_before_braking_starts_a_pass() {
+        let (track, a) = setup();
+        // T4, the hairpin: heavy braking.
+        let i = 3;
+        let zone = a.model.zones[i].clone();
+        let brake = a.reference_metrics[i].brake_point_pct.expect("T4 brakes");
+        let lap: Vec<Sample> = track
+            .simulate_lap(0.95, 0.0, 0.0)
+            .into_iter()
+            .map(on_track)
+            .collect();
+        // First sample at or just after `p`, measured from the zone start.
+        let index_at = |p: f64| {
+            let target = forward(zone.start_pct, p);
+            lap.iter()
+                .position(|s| {
+                    let u = forward(zone.start_pct, s.lap_dist_pct as f64);
+                    u >= target && u < target + 0.02
+                })
+                .unwrap()
+        };
+        let after_zone = index_at(zone.end_pct) + 30;
+        // Drive past the zone, reset back to `to`, drive past it again.
+        let reset_to = |to: usize| -> Vec<Sample> {
+            let mut out: Vec<Sample> = lap[..after_zone].to_vec();
+            let shift = out.last().unwrap().session_time + 1.0 / 60.0 - lap[to].session_time;
+            out.extend(lap[to..after_zone].iter().map(|s| Sample {
+                session_time: s.session_time + shift,
+                ..*s
+            }));
+            out
+        };
+        let run = |samples: &[Sample]| -> Vec<Pass> {
+            let mut c = a.turn_captures().swap_remove(i);
+            samples.iter().filter_map(|s| c.push(s)).collect()
+        };
+
+        // Halfway between the zone start and the braking point: a second pass.
+        let halfway = zone.start_pct + forward(zone.start_pct, brake) / 2.0;
+        let passes = run(&reset_to(index_at(halfway)));
+        assert_eq!(passes.len(), 2);
+        assert!(!passes[0].after_reset && passes[1].after_reset);
+        let full = a.compare_pass(&passes[0]).unwrap().corners[i].time_delta;
+        let part = a.compare_pass(&passes[1]).unwrap().corners[i].time_delta;
+        assert!(full > 0.0, "{full}");
+        // Only the part after the reset point is compared: no more than the
+        // whole zone, and the braking and the corner are in it.
+        assert!(
+            part > 0.0 && part <= full + 0.02,
+            "part {part}, full {full}"
+        );
+
+        // Past the braking point: too late for a fair pass.
+        let late = index_at(a.reference_metrics[i].min_speed_pct);
+        assert_eq!(run(&reset_to(late)).len(), 1);
     }
 }

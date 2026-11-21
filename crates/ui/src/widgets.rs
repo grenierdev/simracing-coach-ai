@@ -1,18 +1,30 @@
-//! Shared widgets and colors.
+//! Shared widgets and colors: a dark, racing-telemetry look (near-black
+//! background, neon accents, square corners, condensed type).
 
 use gpui::{FontWeight, Hsla, SharedString, div, prelude::*, px, rgb};
 
 pub(crate) mod theme {
-    pub const BG: u32 = 0x15171c;
-    pub const PANEL: u32 = 0x1e2128;
-    pub const BORDER: u32 = 0x2c313a;
-    pub const TEXT: u32 = 0xe6e8ec;
-    pub const MUTED: u32 = 0x8a919e;
-    pub const OK: u32 = 0x3fb950;
-    pub const WARN: u32 = 0xd29922;
-    pub const ERR: u32 = 0xf85149;
-    pub const IDLE: u32 = 0x59606b;
-    pub const BEST: u32 = 0xbc8cff;
+    pub const BG: u32 = 0x07090d;
+    pub const PANEL: u32 = 0x0d1219;
+    pub const BORDER: u32 = 0x1b2532;
+    pub const TEXT: u32 = 0xe8f4ff;
+    pub const MUTED: u32 = 0x6c7f94;
+    pub const IDLE: u32 = 0x37445a;
+    /// Neon cyan: the accent (active, selected, highlights).
+    pub const ACCENT: u32 = 0x00e5ff;
+    pub const OK: u32 = 0x2bff88;
+    pub const WARN: u32 = 0xffb020;
+    pub const ERR: u32 = 0xff3355;
+    /// Time to gain, best values.
+    pub const BEST: u32 = 0xd16bff;
+
+    /// Condensed, DIN-like face shipped with Windows 10 and 11; elsewhere the
+    /// system interface font.
+    pub const FONT: &str = if cfg!(windows) {
+        "Bahnschrift"
+    } else {
+        ".SystemUIFont"
+    };
 }
 
 pub(crate) fn delta_color(d: f64) -> u32 {
@@ -29,23 +41,39 @@ pub(crate) fn color(c: u32) -> Hsla {
     rgb(c).into()
 }
 
+/// Small uppercase label.
+pub(crate) fn label(text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .text_xs()
+        .font_weight(FontWeight::BOLD)
+        .text_color(color(theme::MUTED))
+        .child(text.into())
+}
+
+/// Section: square, thin border, an accent bar on the left and an uppercase
+/// title.
 pub(crate) fn panel(title: &'static str) -> gpui::Div {
     div()
+        .relative()
         .flex()
         .flex_col()
         .gap_2()
-        .p_3()
+        .py_2()
+        .pl_3()
+        .pr_2()
         .bg(color(theme::PANEL))
         .border_1()
         .border_color(color(theme::BORDER))
-        .rounded_md()
         .child(
             div()
-                .text_xs()
-                .text_color(color(theme::MUTED))
-                .font_weight(FontWeight::BOLD)
-                .child(title.to_uppercase()),
+                .absolute()
+                .left_0()
+                .top_0()
+                .bottom_0()
+                .w(px(2.))
+                .bg(color(theme::ACCENT)),
         )
+        .child(label(title.to_uppercase()))
 }
 
 pub(crate) fn status_pill(
@@ -59,28 +87,15 @@ pub(crate) fn status_pill(
         .gap_2()
         .px_2()
         .py_1()
-        .rounded_md()
         .bg(color(theme::BG))
-        .child(div().size(px(8.)).rounded_full().bg(color(state_color)))
+        .border_l_2()
+        .border_color(color(state_color))
         .child(div().text_sm().child(label))
         .child(
             div()
                 .text_xs()
                 .text_color(color(theme::MUTED))
                 .child(detail.into()),
-        )
-}
-
-pub(crate) fn big_value(label: &'static str, value: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .child(div().text_xs().text_color(color(theme::MUTED)).child(label))
-        .child(
-            div()
-                .text_2xl()
-                .font_weight(FontWeight::BOLD)
-                .child(value.into()),
         )
 }
 
@@ -98,43 +113,43 @@ pub(crate) fn row(cells: Vec<(f32, SharedString)>, text: u32) -> gpui::Div {
         )
 }
 
-/// Small clickable button (the caller adds `on_click`).
+/// Small clickable button (the caller adds `on_click`): square, outlined,
+/// uppercase.
 pub(crate) fn button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
 ) -> gpui::Stateful<gpui::Div> {
+    let label: SharedString = label.into();
     div()
         .id(id)
         .px_2()
         .py_1()
         .flex_none()
-        .rounded_md()
-        .bg(color(theme::BORDER))
+        .border_1()
+        .border_color(color(theme::BORDER))
+        .bg(color(theme::BG))
         .text_xs()
+        .font_weight(FontWeight::BOLD)
+        .text_color(color(theme::ACCENT))
         .cursor_pointer()
-        .child(label.into())
+        .hover(|s| s.border_color(color(theme::ACCENT)))
+        .child(label.to_uppercase())
 }
 
-/// State light: a dot and a label, bright when on.
-pub(crate) fn light(label: &'static str, on: bool, on_color: u32) -> gpui::Div {
+/// The coach state, one at a time: a colored bar and the name.
+pub(crate) fn state_chip(name: &'static str, tone: u32) -> gpui::Div {
     div()
         .flex()
         .items_center()
-        .gap_1()
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .bg(color(if on { theme::PANEL } else { theme::BG }))
-        .child(div().size(px(10.)).rounded_full().bg(color(if on {
-            on_color
-        } else {
-            theme::BORDER
-        })))
+        .gap_2()
+        .flex_none()
+        .child(div().w(px(4.)).h(px(16.)).bg(color(tone)))
         .child(
             div()
-                .text_xs()
-                .text_color(color(if on { theme::TEXT } else { theme::IDLE }))
-                .child(label),
+                .text_sm()
+                .font_weight(FontWeight::BOLD)
+                .text_color(color(tone))
+                .child(name.to_uppercase()),
         )
 }
 
@@ -145,16 +160,15 @@ pub(crate) fn wave(
     levels: &std::collections::VecDeque<f32>,
     tone: u32,
 ) -> gpui::Div {
-    const H: f32 = 28.;
+    const H: f32 = 20.;
     let bars = levels.iter().map(move |v| {
         // Speech RMS rarely exceeds 0.3: stretch it so it reads well.
         let h = ((v * 3.0).sqrt().min(1.0) * H).max(1.);
         div()
             .flex_1()
             .min_w(px(1.))
-            .max_w(px(6.))
+            .max_w(px(5.))
             .h(px(h))
-            .rounded_sm()
             .bg(color(if *v > 0.003 { tone } else { theme::BORDER }))
     });
     div()
@@ -165,7 +179,7 @@ pub(crate) fn wave(
         .gap_2()
         .child(
             div()
-                .w(px(40.))
+                .w(px(44.))
                 .flex_none()
                 .text_xs()
                 .text_color(color(theme::MUTED))

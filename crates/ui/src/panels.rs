@@ -82,7 +82,6 @@ impl CoachView {
                 .px_2()
                 .py_1()
                 .flex_none()
-                .rounded_md()
                 .bg(color(theme::BORDER))
                 .text_xs()
                 .cursor_pointer()
@@ -206,6 +205,13 @@ impl CoachView {
             }))
             .children(self.output.is_some().then(|| self.render_volume_row(cx)))
             .children(self.render_device_menu(cx))
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(wave("Coach", &self.coach_wave, theme::OK))
+                    .child(wave("Mic", &self.mic_wave, theme::ERR)),
+            )
             .children(latency.map(|l| div().text_xs().text_color(color(theme::MUTED)).child(l)))
     }
 
@@ -221,7 +227,6 @@ impl CoachView {
                 .id(("volume", level as usize))
                 .w(px(9.))
                 .h(px(14.))
-                .rounded_sm()
                 .cursor_pointer()
                 .bg(color(match (on, level > 100) {
                     (false, _) => theme::BORDER,
@@ -239,7 +244,6 @@ impl CoachView {
                 .id(id)
                 .px_2()
                 .flex_none()
-                .rounded_md()
                 .bg(color(theme::BORDER))
                 .cursor_pointer()
                 .child(label)
@@ -316,7 +320,6 @@ impl CoachView {
                     .px_2()
                     .py_1()
                     .flex_none()
-                    .rounded_md()
                     .bg(color(theme::BORDER))
                     .cursor_pointer()
                     .child(if open { "Close" } else { "Change…" })
@@ -344,7 +347,6 @@ impl CoachView {
                 .id(("device", i))
                 .px_2()
                 .py_1()
-                .rounded_md()
                 .whitespace_nowrap()
                 .overflow_hidden()
                 .text_ellipsis()
@@ -363,7 +365,6 @@ impl CoachView {
                 .flex_col()
                 .text_xs()
                 .p_1()
-                .rounded_md()
                 .border_1()
                 .border_color(color(theme::BORDER))
                 .children(rows),
@@ -441,7 +442,6 @@ impl CoachView {
             )
             .px_2()
             .py_1()
-            .rounded_md()
             .border_1()
             .border_color(color(if focused { theme::BEST } else { theme::BORDER }))
             .bg(color(theme::BG))
@@ -556,7 +556,6 @@ impl CoachView {
             .id("pick-plan")
             .px_2()
             .py_1()
-            .rounded_md()
             .bg(color(theme::BORDER))
             .text_xs()
             .cursor_pointer()
@@ -589,7 +588,7 @@ impl CoachView {
         let p = self.planner.as_ref()?;
         let st = p.status();
         let (line, tone) = if !st.enabled {
-            ("Focus coaching disabled".to_string(), theme::MUTED)
+            ("Turn analysis disabled".to_string(), theme::MUTED)
         } else if let Some(what) = &st.running {
             (format!("Analyzing {what} ({})…", st.model), theme::WARN)
         } else if let Some(e) = &st.error {
@@ -604,7 +603,10 @@ impl CoachView {
             )
         } else {
             (
-                format!("Focus coaching ({}) after the next valid lap", st.model),
+                format!(
+                    "Turn analysis ({}) after each pass through a turn",
+                    st.model
+                ),
                 theme::MUTED,
             )
         };
@@ -613,7 +615,6 @@ impl CoachView {
             .px_2()
             .py_1()
             .flex_none()
-            .rounded_md()
             .bg(color(theme::BORDER))
             .text_xs()
             .cursor_pointer()
@@ -667,7 +668,6 @@ impl CoachView {
             .id("pick-reference")
             .px_2()
             .py_1()
-            .rounded_md()
             .bg(color(theme::BORDER))
             .text_xs()
             .cursor_pointer()

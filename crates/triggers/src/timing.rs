@@ -147,6 +147,37 @@ pub fn check_fit(triggers: &[Trigger], analyzer: &Analyzer, settings: &PlanSetti
     )
 }
 
+/// Speaking time on the straight before each corner's braking zone, s, at
+/// reference pace (`None` for a corner the reference takes without braking).
+pub fn speaking_windows(
+    analyzer: &Analyzer,
+    settings: &PlanSettings,
+) -> Vec<(String, Option<f64>)> {
+    let ctx = TrackContext {
+        model: &analyzer.model,
+        reference: &analyzer.reference_metrics,
+    };
+    let quiet = ctx.quiet_zones(settings);
+    let profile = TimeProfile::from_analyzer(analyzer);
+    let lead = settings.quiet_lead_m.unwrap_or(30.0) / analyzer.model.length_m;
+    analyzer
+        .model
+        .corners
+        .iter()
+        .zip(&analyzer.reference_metrics)
+        .map(|(c, m)| {
+            let w = match (&profile, m.brake_point_pct) {
+                (Some(p), Some(brake)) => {
+                    let start = (brake - lead).rem_euclid(1.0);
+                    previous_quiet_end(start - 1e-6, &quiet).map(|from| p.time_between(from, start))
+                }
+                _ => None,
+            };
+            (c.label(), w)
+        })
+        .collect()
+}
+
 /// Longest sentence (characters) that can be spoken in `seconds`.
 pub fn max_chars(seconds: f64) -> usize {
     ((seconds - FIT_MARGIN_S - 0.35).max(0.0) * 16.0).floor() as usize

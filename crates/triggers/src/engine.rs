@@ -1,13 +1,19 @@
 //! Trigger engine, run on every sample (60 Hz).
 //!
 //! A trigger is "armed" when the car crosses its position and its condition
-//! holds. It is spoken as soon as a slot opens: nobody is speaking, the car is
-//! not in a quiet zone, and the sentence has time to be spoken before the next
-//! quiet zone. Past its maximum delay, it is dropped.
+//! holds, then spoken as soon as nobody is speaking. Past its maximum delay,
+//! it is dropped. Cues are placed to end before the braking zone (see
+//! [`crate::timing`]); the pedals do not hold them back.
 //!
-//! Hard rule: no speech in a braking zone. The engine starts nothing while
-//! braking (pedal above 5 %) or in a quiet zone, and cuts off the current
-//! speech if it enters one.
+//! A trigger is spoken once per pass, not per lap number: the line starts a
+//! new pass, and so does a jump (reset to a save point, teleport). After a
+//! reset that puts the car between a cue and its corner, the cue is spoken at
+//! once.
+//!
+//! Optional rule (`silence_in_braking`): no speech in a braking zone. The
+//! engine then starts nothing while braking (pedal above 5 %) or in a quiet
+//! zone, waits for a gap long enough before the next quiet zone, and cuts off
+//! the current speech if it enters one.
 
 use telemetry::Sample;
 
@@ -66,15 +72,34 @@ pub struct TickContext {
     pub track_length_m: f64,
 }
 
+#[derive(Clone)]
 struct Slot {
     trigger: Trigger,
     times_spoken: u32,
+    /// Lap number when last spoken (display).
     last_spoken_lap: Option<i32>,
-    armed_lap: Option<i32>,
+    /// Pass on which the trigger was last armed, and last spoken.
+    armed_pass: Option<u64>,
+    spoken_pass: Option<u64>,
     expired: bool,
     dropped: u32,
     /// Lap on which the trigger was activated (basis for its expiry).
     base_lap: Option<i32>,
+}
+
+impl Slot {
+    fn new(trigger: Trigger) -> Self {
+        Slot {
+            trigger,
+            times_spoken: 0,
+            last_spoken_lap: None,
+            armed_pass: None,
+            spoken_pass: None,
+            expired: false,
+            dropped: 0,
+            base_lap: None,
+        }
+    }
 }
 
 struct Pending {
@@ -92,7 +117,15 @@ pub struct TriggerEngine {
     stop_sent: bool,
     /// Reference timing: speaking time left before the next quiet zone.
     profile: Option<TimeProfile>,
+    /// Current pass: a new one starts at the line and after every jump
+    /// (reset, teleport, back on track). A trigger is spoken once per pass.
+    pass: u64,
+    /// Hold speech while braking and in quiet zones (off by default).
+    silence_in_braking: bool,
 }
+
+/// A backward step smaller than this is noise, not a reset, fraction of a lap.
+const JITTER_PCT: f64 = 0.002;
 
 fn forward(a: f64, b: f64) -> f64 {
     (b - a).rem_euclid(1.0)
@@ -107,24 +140,15 @@ fn crossed(prev: f64, cur: f64, at: f64) -> bool {
 impl TriggerEngine {
     pub fn new(triggers: Vec<Trigger>, quiet: Vec<QuietZone>) -> Self {
         TriggerEngine {
-            slots: triggers
-                .into_iter()
-                .map(|trigger| Slot {
-                    trigger,
-                    times_spoken: 0,
-                    last_spoken_lap: None,
-                    armed_lap: None,
-                    expired: false,
-                    dropped: 0,
-                    base_lap: None,
-                })
-                .collect(),
+            slots: triggers.into_iter().map(Slot::new).collect(),
             quiet,
             pending: vec![],
             prev: None,
             to_arm: vec![],
             stop_sent: false,
             profile: None,
+            pass: 0,
+            silence_in_braking: false,
         }
     }
 
@@ -134,11 +158,37 @@ impl TriggerEngine {
         self.profile = Some(profile);
     }
 
+    /// Holds speech while braking and in the quiet zones, and cuts a sentence
+    /// when braking starts. Off by default: a cue is spoken where it is
+    /// placed (before the braking zone), whatever the pedals do.
+    pub fn set_silence_in_braking(&mut self, on: bool) {
+        self.silence_in_braking = on;
+    }
+
     /// Carries over the state of unchanged triggers from a previous engine (same
     /// id, same text): an updated plan does not repeat a "once" trigger already
     /// spoken, nor restart its expiry. The position is not compared: adding a
-    /// cue on the same straight can move the others to make room.
+    /// cue on the same straight can move the others to make room. One-off
+    /// sentences not spoken yet (`inject`) are carried over too, with their
+    /// place in the queue.
     pub fn carry_state_from(&mut self, old: &TriggerEngine) {
+        for (i, o) in old.slots.iter().enumerate() {
+            let one_off = !o.trigger.at_pct.is_finite() || o.trigger.id.starts_with("say-");
+            if !one_off || o.expired || self.slots.iter().any(|s| s.trigger.id == o.trigger.id) {
+                continue;
+            }
+            self.slots.push(o.clone());
+            let j = self.slots.len() - 1;
+            if let Some(p) = old.pending.iter().find(|p| p.slot == i) {
+                self.pending.push(Pending {
+                    slot: j,
+                    armed_pct: p.armed_pct,
+                });
+            }
+            if old.to_arm.contains(&i) {
+                self.to_arm.push(j);
+            }
+        }
         for slot in &mut self.slots {
             if let Some(o) = old
                 .slots
@@ -147,28 +197,22 @@ impl TriggerEngine {
             {
                 slot.times_spoken = o.times_spoken;
                 slot.last_spoken_lap = o.last_spoken_lap;
-                slot.armed_lap = o.armed_lap;
+                slot.armed_pass = o.armed_pass;
+                slot.spoken_pass = o.spoken_pass;
                 slot.expired = o.expired;
                 slot.dropped = o.dropped;
                 slot.base_lap = o.base_lap;
             }
         }
         self.prev = old.prev;
+        self.pass = old.pass;
     }
 
     /// Adds a one-off trigger (spoken only once). `arm_now`: armed right away at
     /// the current position, otherwise when `at_pct` is crossed.
     pub fn inject(&mut self, mut trigger: Trigger, arm_now: bool) {
         trigger.repeat = Repeat::Once;
-        self.slots.push(Slot {
-            trigger,
-            times_spoken: 0,
-            last_spoken_lap: None,
-            armed_lap: None,
-            expired: false,
-            dropped: 0,
-            base_lap: None,
-        });
+        self.slots.push(Slot::new(trigger));
         if arm_now {
             self.to_arm.push(self.slots.len() - 1);
         }
@@ -212,15 +256,20 @@ impl TriggerEngine {
             .collect()
     }
 
-    fn eligible(&self, slot: &Slot, lap: i32) -> bool {
-        if slot.expired || slot.armed_lap == Some(lap) {
+    fn eligible(&self, slot: &Slot) -> bool {
+        if slot.expired || slot.armed_pass == Some(self.pass) {
             return false;
         }
         match slot.trigger.repeat {
             Repeat::Once => slot.times_spoken == 0,
-            Repeat::EveryLap => slot.last_spoken_lap != Some(lap),
-            Repeat::Laps(n) => slot.times_spoken < n && slot.last_spoken_lap != Some(lap),
+            Repeat::EveryLap => slot.spoken_pass != Some(self.pass),
+            Repeat::Laps(n) => slot.times_spoken < n && slot.spoken_pass != Some(self.pass),
         }
+    }
+
+    fn arm(&mut self, i: usize, armed_pct: f64) {
+        self.slots[i].armed_pass = Some(self.pass);
+        self.pending.push(Pending { slot: i, armed_pct });
     }
 
     /// One tick: `duration` gives the duration (s) of a sentence once spoken.
@@ -253,9 +302,9 @@ impl TriggerEngine {
             }
         }
 
-        // Hard rule: silence while braking and in quiet zones.
-        let braking = s.brake >= BRAKE_SILENCE;
-        let quiet = self.in_quiet_zone(pct);
+        // Optional rule: silence while braking and in quiet zones.
+        let braking = self.silence_in_braking && s.brake >= BRAKE_SILENCE;
+        let quiet = self.silence_in_braking && self.in_quiet_zone(pct);
         if ctx.speaking && (braking || quiet) {
             if !self.stop_sent {
                 out.push(Command::Stop {
@@ -271,33 +320,57 @@ impl TriggerEngine {
             self.stop_sent = false;
         }
 
-        // Injected triggers: armed at the current position.
-        for i in std::mem::take(&mut self.to_arm) {
-            self.slots[i].armed_lap = Some(s.lap);
-            self.pending.push(Pending {
-                slot: i,
-                armed_pct: pct,
-            });
+        // Passes: the line starts a new one, and so does a jump (reset to a
+        // save point, teleport, back on track), so that a cue already spoken
+        // is spoken again on the next try. Tiny backward steps are noise.
+        let prev_pct = prev.lap_dist_pct as f64;
+        let step = forward(prev_pct, pct);
+        let back_on_track = !prev.is_on_track || !prev_pct.is_finite();
+        let jitter = step > 1.0 - JITTER_PCT;
+        let jumped = back_on_track || (step >= MAX_STEP_PCT && !jitter);
+        if jumped || crossed(prev_pct, pct, 0.0) {
+            self.pass += 1;
         }
 
-        // Arm crossed triggers.
-        let prev_pct = prev.lap_dist_pct as f64;
-        for i in 0..self.slots.len() {
-            let slot = &self.slots[i];
-            let at = slot.trigger.at_pct;
-            if !crossed(prev_pct, pct, at) || !self.eligible(slot, s.lap) {
-                continue;
+        // Injected triggers: armed at the current position.
+        for i in std::mem::take(&mut self.to_arm) {
+            self.arm(i, pct);
+        }
+
+        let holds = |slot: &Slot| {
+            slot.trigger
+                .condition
+                .as_ref()
+                .is_none_or(|c| c.holds(s.speed, ctx.live_delta, s.lap))
+        };
+        if jumped {
+            // After a reset between a cue and its corner, the cue is spoken
+            // now: the car will not cross its position before the corner.
+            for i in 0..self.slots.len() {
+                let slot = &self.slots[i];
+                let (at, Some(anchor)) = (slot.trigger.at_pct, slot.trigger.anchor_pct) else {
+                    continue;
+                };
+                let into = forward(at, pct);
+                if at.is_finite()
+                    && into > 0.0
+                    && into < forward(at, anchor)
+                    && self.eligible(slot)
+                    && holds(slot)
+                {
+                    self.arm(i, pct);
+                }
             }
-            if let Some(c) = &slot.trigger.condition
-                && !c.holds(s.speed, ctx.live_delta, s.lap)
-            {
-                continue;
+        } else {
+            // Arm crossed triggers.
+            for i in 0..self.slots.len() {
+                let slot = &self.slots[i];
+                if crossed(prev_pct, pct, slot.trigger.at_pct) && self.eligible(slot) && holds(slot)
+                {
+                    let at = slot.trigger.at_pct;
+                    self.arm(i, at);
+                }
             }
-            self.slots[i].armed_lap = Some(s.lap);
-            self.pending.push(Pending {
-                slot: i,
-                armed_pct: at,
-            });
         }
 
         // Drop triggers that are too late.
@@ -319,6 +392,7 @@ impl TriggerEngine {
         if ctx.speaking || braking || quiet || self.pending.is_empty() {
             return out;
         }
+        let check_fit = self.silence_in_braking && !self.quiet.is_empty();
         // The current speed overestimates the time left on a corner exit,
         // where the car accelerates: the reference timing bounds it.
         let speed = (s.speed as f64).max(5.0);
@@ -341,12 +415,14 @@ impl TriggerEngine {
         for k in order {
             let slot_idx = self.pending[k].slot;
             let text = self.slots[slot_idx].trigger.text.clone();
-            let d = duration(&text);
-            if self.quiet.is_empty() || d + FIT_MARGIN_S <= available_s {
+            let fits = !check_fit || duration(&text) + FIT_MARGIN_S <= available_s;
+            if fits {
                 self.pending.remove(k);
+                let pass = self.pass;
                 let slot = &mut self.slots[slot_idx];
                 slot.times_spoken += 1;
                 slot.last_spoken_lap = Some(s.lap);
+                slot.spoken_pass = Some(pass);
                 if slot.trigger.repeat == Repeat::Once
                     || matches!(slot.trigger.repeat, Repeat::Laps(n) if slot.times_spoken >= n)
                 {
@@ -381,7 +457,14 @@ mod tests {
             condition: None,
             expire_after_laps: None,
             max_delay_pct: 0.05,
+            anchor_pct: None,
         }
+    }
+
+    /// The engine with the optional braking rule on.
+    fn braking_rule(mut e: TriggerEngine) -> TriggerEngine {
+        e.set_silence_in_braking(true);
+        e
     }
 
     fn sample(pct: f64, lap: i32, brake: f32) -> Sample {
@@ -416,26 +499,37 @@ mod tests {
         }
 
         fn run(&mut self, laps: i32, speech_s: f64, brake_zones: &[(f64, f64)]) {
-            let step = 0.001; // 1000 ticks per lap, 1/60 s each
             for lap in 1..=laps {
-                for i in 0..1000 {
-                    let pct = i as f64 * step;
-                    let braking = brake_zones.iter().any(|&(a, b)| pct >= a && pct <= b);
-                    let s = sample(pct, lap, if braking { 0.8 } else { 0.0 });
-                    self.t += 1.0 / 60.0;
-                    let ctx = TickContext {
-                        live_delta: Some(0.3),
-                        speaking: self.t < self.speaking_until,
-                        track_length_m: 3000.0,
-                    };
-                    let cmds = self.engine.tick(&s, &ctx, &mut |_| speech_s);
-                    for c in cmds {
-                        match &c {
-                            Command::Say { .. } => self.speaking_until = self.t + speech_s,
-                            Command::Stop { .. } => self.speaking_until = self.t,
-                        }
-                        self.log.push((lap, pct, c));
+                self.drive(0, 1000, lap, speech_s, brake_zones);
+            }
+        }
+
+        /// Drives from `from` to `to` thousandths of a lap (1/60 s each).
+        fn drive(
+            &mut self,
+            from: usize,
+            to: usize,
+            lap: i32,
+            speech_s: f64,
+            brake_zones: &[(f64, f64)],
+        ) {
+            for i in from..to {
+                let pct = i as f64 * 0.001;
+                let braking = brake_zones.iter().any(|&(a, b)| pct >= a && pct <= b);
+                let s = sample(pct, lap, if braking { 0.8 } else { 0.0 });
+                self.t += 1.0 / 60.0;
+                let ctx = TickContext {
+                    live_delta: Some(0.3),
+                    speaking: self.t < self.speaking_until,
+                    track_length_m: 3000.0,
+                };
+                let cmds = self.engine.tick(&s, &ctx, &mut |_| speech_s);
+                for c in cmds {
+                    match &c {
+                        Command::Say { .. } => self.speaking_until = self.t + speech_s,
+                        Command::Stop { .. } => self.speaking_until = self.t,
                     }
+                    self.log.push((lap, pct, c));
                 }
             }
         }
@@ -478,11 +572,73 @@ mod tests {
     }
 
     #[test]
+    fn spoken_where_placed_whatever_the_pedals() {
+        // Default: braking neither holds nor cuts a cue.
+        let quiet = vec![QuietZone {
+            start: 0.38,
+            end: 0.45,
+        }];
+        let mut sim = Sim::new(TriggerEngine::new(vec![trig("a", 0.40, 5)], quiet));
+        sim.run(1, 10.0, &[(0.38, 0.45)]);
+        let said = sim.said();
+        assert_eq!(said.len(), 1);
+        assert!((said[0].1 - 0.40).abs() < 0.002, "spoken at {}", said[0].1);
+        assert!(
+            !sim.log
+                .iter()
+                .any(|(_, _, c)| matches!(c, Command::Stop { .. })),
+            "not cut off by braking"
+        );
+    }
+
+    #[test]
+    fn spoken_again_after_a_reset_on_the_same_lap() {
+        // Drive to 0.5, reset back to 0.25 (same lap number), drive again:
+        // the cue at 0.3 is spoken on both tries.
+        let mut sim = Sim::new(TriggerEngine::new(vec![trig("a", 0.3, 5)], vec![]));
+        sim.drive(0, 500, 1, 1.0, &[]);
+        sim.drive(250, 500, 1, 1.0, &[]);
+        let at: Vec<f64> = sim.said().into_iter().map(|x| x.1).collect();
+        assert_eq!(at.len(), 2, "{at:?}");
+        assert!(at.iter().all(|p| (p - 0.3).abs() < 0.002), "{at:?}");
+    }
+
+    #[test]
+    fn reset_between_cue_and_corner_speaks_it_at_once() {
+        // Cue at 0.30 for a corner braking at 0.40; reset to 0.35: the car
+        // never crosses 0.30 again before the corner, the cue goes now.
+        let mut t = trig("a", 0.30, 5);
+        t.anchor_pct = Some(0.40);
+        let mut other = trig("b", 0.10, 5);
+        other.anchor_pct = Some(0.20);
+        let mut sim = Sim::new(TriggerEngine::new(vec![t, other], vec![]));
+        sim.drive(0, 500, 1, 1.0, &[]);
+        sim.drive(350, 500, 1, 1.0, &[]);
+        let said = sim.said();
+        let ids: Vec<&str> = said.iter().map(|x| x.2.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["b", "a", "a"],
+            "the corner behind is not repeated"
+        );
+        assert!((said[2].1 - 0.35).abs() < 0.002, "spoken at {}", said[2].1);
+    }
+
+    #[test]
+    fn small_backward_steps_are_noise() {
+        let mut sim = Sim::new(TriggerEngine::new(vec![trig("a", 0.3, 5)], vec![]));
+        sim.drive(0, 302, 1, 1.0, &[]);
+        // One thousandth back, then on: not a reset, not spoken twice.
+        sim.drive(301, 400, 1, 1.0, &[]);
+        assert_eq!(sim.said().len(), 1);
+    }
+
+    #[test]
     fn never_starts_speaking_while_braking() {
         // Trigger placed in the middle of braking: it waits for the end of braking.
         let mut t = trig("a", 0.40, 5);
         t.max_delay_pct = 0.10;
-        let mut sim = Sim::new(TriggerEngine::new(vec![t], vec![]));
+        let mut sim = Sim::new(braking_rule(TriggerEngine::new(vec![t], vec![])));
         sim.run(1, 1.0, &[(0.38, 0.45)]);
         let said = sim.said();
         assert_eq!(said.len(), 1);
@@ -492,7 +648,7 @@ mod tests {
     #[test]
     fn dropped_when_too_late() {
         let t = trig("a", 0.40, 5); // max delay 5 %
-        let mut sim = Sim::new(TriggerEngine::new(vec![t], vec![]));
+        let mut sim = Sim::new(braking_rule(TriggerEngine::new(vec![t], vec![])));
         sim.run(1, 1.0, &[(0.38, 0.50)]);
         assert!(sim.said().is_empty());
         assert_eq!(sim.engine.views()[0].dropped, 1);
@@ -508,7 +664,7 @@ mod tests {
         }];
         let mut t = trig("a", 0.27, 5);
         t.max_delay_pct = 0.2;
-        let mut sim = Sim::new(TriggerEngine::new(vec![t], quiet));
+        let mut sim = Sim::new(braking_rule(TriggerEngine::new(vec![t], quiet)));
         sim.run(1, 3.0, &[]);
         let said = sim.said();
         assert_eq!(said.len(), 1);
@@ -516,20 +672,23 @@ mod tests {
         // A short sentence (1 s) fits before the zone.
         let mut short = trig("b", 0.27, 5);
         short.max_delay_pct = 0.2;
-        let mut sim = Sim::new(TriggerEngine::new(
+        let mut sim = Sim::new(braking_rule(TriggerEngine::new(
             vec![short],
             vec![QuietZone {
                 start: 0.30,
                 end: 0.35,
             }],
-        ));
+        )));
         sim.run(1, 1.0, &[]);
         assert!(sim.said()[0].1 < 0.30);
     }
 
     #[test]
     fn stops_speech_when_braking_starts() {
-        let mut sim = Sim::new(TriggerEngine::new(vec![trig("a", 0.10, 5)], vec![]));
+        let mut sim = Sim::new(braking_rule(TriggerEngine::new(
+            vec![trig("a", 0.10, 5)],
+            vec![],
+        )));
         // Very long sentence (10 s): braking at 0.15 cuts it off.
         sim.run(1, 10.0, &[(0.15, 0.20)]);
         let stops: Vec<_> = sim
@@ -586,7 +745,7 @@ mod tests {
 
     #[test]
     fn injected_message_waits_for_end_of_braking() {
-        let mut engine = TriggerEngine::new(vec![], vec![]);
+        let mut engine = braking_rule(TriggerEngine::new(vec![], vec![]));
         let mut injected = trig("say", f64::NAN, 9);
         injected.max_delay_pct = 0.3;
         let mut sim = Sim::new(engine);
@@ -616,6 +775,22 @@ mod tests {
         sim2.run(1, 1.0, &[]);
         let ids: Vec<String> = sim2.said().into_iter().map(|x| x.2).collect();
         assert_eq!(ids, vec!["new"]);
+    }
+
+    #[test]
+    fn a_plan_update_keeps_the_sentences_not_spoken_yet() {
+        let mut sim = Sim::new(TriggerEngine::new(vec![trig("a", 0.5, 5)], vec![]));
+        sim.drive(0, 100, 1, 1.0, &[]);
+        let mut said = trig("say-1", f64::NAN, 9);
+        said.max_delay_pct = 0.3;
+        sim.engine.inject(said, true);
+        // The plan changes before the next sample: a new engine.
+        let mut engine = TriggerEngine::new(vec![trig("a", 0.5, 5), trig("b", 0.6, 5)], vec![]);
+        engine.carry_state_from(&sim.engine);
+        sim.engine = engine;
+        sim.drive(100, 200, 1, 1.0, &[]);
+        let ids: Vec<String> = sim.said().into_iter().map(|x| x.2).collect();
+        assert_eq!(ids, vec!["say-1"]);
     }
 
     #[test]

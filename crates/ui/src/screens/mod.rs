@@ -4,7 +4,7 @@ mod chat;
 mod coaching;
 mod setup;
 
-use gpui::{Context, div, prelude::*};
+use gpui::{Context, FontWeight, div, prelude::*, px};
 
 use crate::widgets::*;
 use crate::{CoachView, Screen};
@@ -15,20 +15,44 @@ impl CoachView {
             let active = self.screen == screen;
             div()
                 .id(id)
+                .flex()
+                .flex_col()
+                .gap(px(3.))
                 .px_3()
-                .py_1()
-                .rounded_md()
-                .text_sm()
+                .pt_1()
                 .cursor_pointer()
-                .bg(color(if active { theme::PANEL } else { theme::BG }))
-                .text_color(color(if active { theme::TEXT } else { theme::MUTED }))
-                .child(label)
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(color(if active { theme::TEXT } else { theme::MUTED }))
+                        .child(label.to_uppercase()),
+                )
+                // Underline in the accent color for the active screen.
+                .child(
+                    div()
+                        .h(px(2.))
+                        .bg(color(if active { theme::ACCENT } else { theme::BG })),
+                )
                 .on_click(cx.listener(move |view, _, _, cx| {
                     view.screen = screen;
                     view.device_menu = None;
                     cx.notify();
                 }))
         };
+        let brand = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .pr_3()
+            .child(div().w(px(3.)).h(px(14.)).bg(color(theme::ACCENT)))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::EXTRA_BOLD)
+                    .text_color(color(theme::ACCENT))
+                    .child("SIMCOACH"),
+            );
         let widget = button(
             "widget",
             if self.widget_open() {
@@ -45,6 +69,10 @@ impl CoachView {
             .flex()
             .items_center()
             .gap_1()
+            .pb_1()
+            .border_b_1()
+            .border_color(color(theme::BORDER))
+            .child(brand)
             .child(tab("tab-coaching", "Coaching", Screen::Coaching))
             .child(tab("tab-chat", "Chat", Screen::Chat))
             .child(tab("tab-setup", "Setup", Screen::Setup))

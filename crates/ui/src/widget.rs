@@ -1,9 +1,10 @@
 //! Coaching widget: a small window with no title bar, border, shadow or
-//! taskbar entry, kept above the game. Four lines, what matters while
-//! driving: the coach state (one at a time) with the focus corners, the time
-//! still to gain, the next cue and the last sentence spoken. Drag it anywhere
-//! on its surface to move it, and by the grip in the bottom-right corner to
-//! resize it; it reopens where and as it was left.
+//! taskbar entry, kept above the game. Three lines, what matters while
+//! driving: the coach state (one at a time) with the turns that have the most
+//! time to gain, the next cue, and the last sentence spoken. A bar on the
+//! left edge takes the color of the state. Drag it anywhere on its surface to
+//! move it, and by the grip in the bottom-right corner to resize it; it
+//! reopens where and as it was left.
 //!
 //! On Windows, `WindowKind::PopUp` makes it a topmost tool window; its style
 //! is then reduced to a plain popup so that the compositor draws no frame or
@@ -15,16 +16,14 @@ use gpui::{
     MouseDownEvent, Pixels, Point, Render, Size, Subscription, Window, WindowBounds,
     WindowControlArea, WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px, size,
 };
-use mcp::{FocusPhase, FocusStatus};
-use triggers::TriggerState;
 
-use crate::widgets::{color, theme};
+use crate::widgets::{color, label, theme};
 use crate::{Activity, CoachView};
 
-/// Default size, px: four lines.
-pub const SIZE: (f32, f32) = (380., 92.);
+/// Default size, px: three lines.
+pub const SIZE: (f32, f32) = (380., 72.);
 /// Smallest size the grip allows, px.
-const MIN: (f32, f32) = (220., 64.);
+const MIN: (f32, f32) = (220., 56.);
 
 pub struct WidgetView {
     coach: Entity<CoachView>,
@@ -118,146 +117,67 @@ pub(crate) fn state_of(a: &Activity) -> (&'static str, u32) {
     } else if a.thinking {
         ("Thinking", theme::WARN)
     } else if a.analyzing {
-        ("Analyzing", theme::BEST)
+        ("Analyzing", theme::ACCENT)
     } else {
         ("Idle", theme::MUTED)
     }
 }
 
-/// Focus corners and stage, short: "T5, T6 · 3 tries".
-pub(crate) fn focus_short(f: &FocusStatus) -> String {
-    match f.phase {
-        FocusPhase::Off => String::new(),
-        FocusPhase::WaitingForLap => "waiting for a clean lap".into(),
-        FocusPhase::Choosing => "choosing corners".into(),
-        FocusPhase::Practicing => match f.attempts.len() {
-            0 => f.corners.join(", "),
-            1 => format!("{} · 1 try", f.corners.join(", ")),
-            n => format!("{} · {n} tries", f.corners.join(", ")),
-        },
-    }
-}
-
-/// Time still to gain over the focus corners: the last clean attempt, or the
-/// starting time before the first one.
-pub(crate) fn focus_gain(f: &FocusStatus) -> Option<String> {
-    if f.phase != FocusPhase::Practicing {
-        return None;
-    }
-    let now = f
-        .attempts
-        .iter()
-        .rev()
-        .find(|a| !a.off_track)
-        .map(|a| a.loss_s)
-        .or(f.baseline_s)?;
-    let corners = f.corners.join(", ");
-    if now <= 0.0 {
-        return Some(format!("{corners}: gap closed"));
-    }
-    let best = f
-        .best_s()
-        .filter(|b| (b - now).abs() > 0.005)
-        .map(|b| format!(" (best {:.2})", b.max(0.0)))
-        .unwrap_or_default();
-    Some(format!("{now:.2} s on {corners}{best}"))
-}
-
-/// The corners where the most time is lost, from a lap comparison:
-/// "T5 0.31 · T2 0.22 · T9 0.15".
-pub(crate) fn top_gains(cmp: &analysis::LapComparison, n: usize) -> Option<String> {
-    let parts: Vec<String> = cmp
-        .ranked()
-        .into_iter()
-        .filter(|c| c.time_delta >= 0.05)
-        .take(n)
-        .map(|c| format!("{} {:.2}", c.label(), c.time_delta))
-        .collect();
-    (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
-fn line(label: &'static str, text: String, tone: u32, bold: bool) -> gpui::Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .min_w_0()
-        .child(
-            div()
-                .w(px(34.))
-                .flex_none()
-                .text_xs()
-                .text_color(color(theme::MUTED))
-                .child(label),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_sm()
-                .when(bold, |d| d.font_weight(FontWeight::BOLD))
-                .whitespace_nowrap()
-                .overflow_hidden()
-                .text_ellipsis()
-                .text_color(color(tone))
-                .child(text),
-        )
+/// "T4 +0.31 · T2 +0.20": the turns with the most time to gain.
+pub(crate) fn gains_text(gains: &[(String, f64)]) -> Option<String> {
+    (!gains.is_empty()).then(|| {
+        gains
+            .iter()
+            .map(|(c, s)| format!("{c} +{s:.2}"))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    })
 }
 
 impl Render for WidgetView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let v = self.coach.read(cx);
-        let (state, state_tone) = state_of(&v.coach_activity());
-        let focus = v.planner.as_ref().map(|p| p.status().focus);
-        let stage = focus.as_ref().map(focus_short).unwrap_or_default();
-        let gain = focus
-            .as_ref()
-            .and_then(focus_gain)
-            .or_else(|| {
-                v.comparisons
-                    .last
-                    .as_deref()
-                    .or(v.comparisons.best.as_deref())
-                    .and_then(|c| top_gains(c, 3))
-            })
-            .unwrap_or_else(|| "–".into());
-        let st = &v.coach_status;
-        let pct = v.snap.sample.map(|s| s.lap_dist_pct as f64);
-        // Next cue: one waiting to be spoken first, then the nearest ahead.
-        let next = st
-            .triggers
-            .iter()
-            .filter(|t| matches!(t.state, TriggerState::Waiting | TriggerState::Queued))
-            .min_by(|x, y| {
-                let ahead = |t: &triggers::TriggerView| match (pct, t.trigger.at_pct) {
-                    (Some(p), at) if at.is_finite() => (at - p).rem_euclid(1.0),
-                    _ => 0.0,
-                };
-                (x.state != TriggerState::Queued)
-                    .cmp(&(y.state != TriggerState::Queued))
-                    .then(ahead(x).total_cmp(&ahead(y)))
-            })
-            .map(|t| {
-                let fits = st
-                    .fits
-                    .iter()
-                    .find(|f| f.id == t.trigger.id)
-                    .is_none_or(|f| f.fits());
-                let place = t.trigger.corner.clone().unwrap_or_default();
-                let tone = if !fits {
-                    theme::ERR
-                } else if t.state == TriggerState::Queued {
-                    theme::WARN
-                } else {
-                    theme::TEXT
-                };
-                (
-                    format!("{place}  {}", t.trigger.text).trim().to_string(),
-                    tone,
-                )
-            });
-        let said = st.log.last().map(|e| e.text.clone());
+        let (state, tone) = state_of(&v.coach_activity());
+        // Per-turn passes when the race engineer runs, the last lap otherwise.
+        let gains = match v.planner.as_ref() {
+            Some(p) => p.status().coaching.top_gains(3),
+            None => v
+                .comparisons
+                .last
+                .as_ref()
+                .map(|c| {
+                    c.ranked()
+                        .into_iter()
+                        .filter(|c| c.time_delta >= 0.05)
+                        .take(3)
+                        .map(|c| (c.label(), c.time_delta))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let gains = gains_text(&gains).unwrap_or_default();
+        let (next, next_tone) = v.next_cue().unwrap_or_else(|| ("–".into(), theme::IDLE));
+        let said = v.last_said().unwrap_or_else(|| "–".into());
 
+        let line = |name: &'static str, text: String, tone: u32| {
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(label(name).w(px(34.)).flex_none())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_color(color(tone))
+                        .child(text),
+                )
+        };
         let grip = div()
             .id("widget-grip")
             .absolute()
@@ -290,8 +210,10 @@ impl Render for WidgetView {
             .id("widget")
             .size_full()
             .relative()
+            .flex()
             .bg(color(theme::BG))
             .text_color(color(theme::TEXT))
+            .font_family(theme::FONT)
             .on_drag_move(cx.listener(|this, e: &DragMoveEvent<Grip>, window, cx| {
                 let Some((from, start)) = this.resize_from else {
                     return;
@@ -302,15 +224,18 @@ impl Render for WidgetView {
                 window.resize(size(w, h));
                 cx.notify();
             }))
+            // The state, as a bar along the left edge.
+            .child(div().w(px(4.)).h_full().flex_none().bg(color(tone)))
             .child(
                 div()
-                    .size_full()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
                     .flex()
                     .flex_col()
                     .justify_center()
                     .gap(px(2.))
                     .px_2()
-                    .py_1()
                     // The whole surface moves the window (no title bar).
                     .window_control_area(WindowControlArea::Drag)
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
@@ -323,38 +248,27 @@ impl Render for WidgetView {
                             .child(
                                 div()
                                     .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(div().size(px(9.)).rounded_full().bg(color(state_tone)))
-                                    .child(
-                                        div().text_sm().text_color(color(state_tone)).child(state),
-                                    ),
+                                    .text_sm()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(color(tone))
+                                    .child(state.to_uppercase()),
                             )
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .text_xs()
+                                    .text_sm()
+                                    .font_weight(FontWeight::BOLD)
                                     .text_right()
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .text_ellipsis()
-                                    .text_color(color(theme::MUTED))
-                                    .child(stage),
+                                    .text_color(color(theme::BEST))
+                                    .child(gains),
                             ),
                     )
-                    .child(line("Gain", gain, theme::BEST, true))
-                    .child(match next {
-                        Some((text, tone)) => line("Next", text, tone, false),
-                        None => line("Next", "–".into(), theme::MUTED, false),
-                    })
-                    .child(line(
-                        "Said",
-                        said.unwrap_or_else(|| "–".into()),
-                        theme::OK,
-                        false,
-                    )),
+                    .child(line("NEXT", next, next_tone))
+                    .child(line("SAID", said, theme::OK)),
             )
             .child(grip)
     }
@@ -442,17 +356,6 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcp::FocusAttempt;
-
-    fn attempt(n: u32, loss: f64, off: bool) -> FocusAttempt {
-        FocusAttempt {
-            number: n,
-            lap: 3,
-            loss_s: loss,
-            corners: vec![],
-            off_track: off,
-        }
-    }
 
     #[test]
     fn one_state_at_a_time() {
@@ -474,24 +377,11 @@ mod tests {
     }
 
     #[test]
-    fn gain_follows_the_last_clean_attempt() {
-        let mut f = FocusStatus {
-            phase: FocusPhase::Practicing,
-            corners: vec!["T5".into(), "T6".into()],
-            baseline_s: Some(0.30),
-            ..Default::default()
-        };
-        assert_eq!(focus_gain(&f).unwrap(), "0.30 s on T5, T6");
-        assert_eq!(focus_short(&f), "T5, T6");
-        f.attempts = vec![attempt(1, 0.15, false), attempt(2, 0.21, false)];
-        assert_eq!(focus_gain(&f).unwrap(), "0.21 s on T5, T6 (best 0.15)");
-        assert_eq!(focus_short(&f), "T5, T6 · 2 tries");
-        // Off track: the last clean attempt counts.
-        f.attempts.push(attempt(3, 0.9, true));
-        assert_eq!(focus_gain(&f).unwrap(), "0.21 s on T5, T6 (best 0.15)");
-        f.attempts.push(attempt(4, -0.02, false));
-        assert_eq!(focus_gain(&f).unwrap(), "T5, T6: gap closed");
-        f.phase = FocusPhase::Choosing;
-        assert_eq!(focus_gain(&f), None);
+    fn gains_line() {
+        assert_eq!(gains_text(&[]), None);
+        assert_eq!(
+            gains_text(&[("T4".into(), 0.312), ("T2".into(), 0.2)]).unwrap(),
+            "T4 +0.31 · T2 +0.20"
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Checks the per-pass analysis of the focus coaching loop on a recorded
+//! Checks the per-pass analysis of the turn-by-turn coaching on a recorded
 //! session: every pass through the chosen corners is compared to the
 //! reference, and set against the same corners of the full laps.
 //!

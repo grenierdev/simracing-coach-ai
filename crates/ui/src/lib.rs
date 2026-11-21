@@ -1,7 +1,7 @@
 //! GPUI interface of the coach, in three screens:
 //!
-//! - **Coaching**: coach state lights, voice levels, focus corners, live
-//!   delta, per-corner analysis and cues;
+//! - **Coaching**: coach state, reference, live delta, every turn with its
+//!   latest pass, best and cue, the next cue and the last sentence spoken;
 //! - **Chat**: conversation with the coach, its analyses, tool calls and the
 //!   detailed corner metrics;
 //! - **Setup**: session, reference, plan, voice, devices and connections.
@@ -139,12 +139,6 @@ pub(crate) struct Activity {
     pub thinking: bool,
     pub speaking: bool,
     pub analyzing: bool,
-}
-
-impl Activity {
-    pub fn idle(&self) -> bool {
-        !(self.listening || self.thinking || self.speaking || self.analyzing)
-    }
 }
 
 enum ReferenceStatus {
@@ -741,6 +735,7 @@ impl Render for CoachView {
             .p_2()
             .bg(color(theme::BG))
             .text_color(color(theme::TEXT))
+            .font_family(theme::FONT)
             .child(self.render_tabs(cx))
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
     }

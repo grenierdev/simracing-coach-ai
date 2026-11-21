@@ -102,6 +102,9 @@ pub struct PlanSettings {
     pub quiet_until: Option<QuietUntil>,
     /// Maximum distance past the planned position to still speak a trigger, m.
     pub max_delay_m: Option<f64>,
+    /// Hold speech while braking and in the quiet zones, and cut a sentence
+    /// when braking starts (default: off, a cue is spoken where it is placed).
+    pub silence_in_braking: Option<bool>,
 }
 
 /// One trigger of the plan.
@@ -162,6 +165,10 @@ pub struct Trigger {
     pub expire_after_laps: Option<u32>,
     /// Maximum tolerated delay, in fraction of a lap.
     pub max_delay_pct: f64,
+    /// Point of the corner the trigger is placed from (its anchor), pct. After
+    /// a reset that puts the car between the trigger and this point, the
+    /// trigger is spoken at once. `None` for an absolute position.
+    pub anchor_pct: Option<f64>,
 }
 
 /// Zone where the coach stays silent, in pct (`start > end`: crosses the line).
@@ -257,12 +264,12 @@ pub fn resolve(plan: &Plan, track: Option<&TrackContext>) -> Result<Vec<Trigger>
             if spec.text.trim().is_empty() {
                 return Err(invalid("empty text".into()));
             }
-            let (at_pct, corner) = match (spec.position, &spec.corner) {
+            let (at_pct, corner, anchor_pct) = match (spec.position, &spec.corner) {
                 (Some(p), _) => {
                     if !(0.0..1.0).contains(&p) {
                         return Err(invalid(format!("position {p} outside [0, 1)")));
                     }
-                    (p, spec.corner.clone())
+                    (p, spec.corner.clone(), None)
                 }
                 (None, Some(label)) => {
                     let t = track.ok_or_else(|| {
@@ -273,7 +280,11 @@ pub fn resolve(plan: &Plan, track: Option<&TrackContext>) -> Result<Vec<Trigger>
                         .ok_or_else(|| invalid(format!("unknown corner: {label}")))?;
                     let base = t.anchor_pct(i, spec.anchor.unwrap_or_default());
                     let offset = spec.offset_m.unwrap_or(DEFAULT_OFFSET_M) / t.model.length_m;
-                    (wrap(base + offset), Some(t.model.corners[i].label()))
+                    (
+                        wrap(base + offset),
+                        Some(t.model.corners[i].label()),
+                        Some(base),
+                    )
                 }
                 (None, None) => return Err(invalid("neither \"corner\" nor \"position\"".into())),
             };
@@ -292,6 +303,7 @@ pub fn resolve(plan: &Plan, track: Option<&TrackContext>) -> Result<Vec<Trigger>
                 expire_after_laps: spec.expire_after_laps,
                 // Unknown track length: 3 % of a lap.
                 max_delay_pct: length.map(|l| max_delay_m / l).unwrap_or(0.03),
+                anchor_pct,
             })
         })
         .collect()

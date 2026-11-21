@@ -244,6 +244,7 @@ fn rebuild(shared: &mut Shared, speech: &mut dyn SpeechOutput) -> Option<(Trigge
     if let Some(p) = profile {
         engine.set_time_profile(p);
     }
+    engine.set_silence_in_braking(plan.settings.silence_in_braking.unwrap_or(false));
     shared.status.triggers = engine.views();
     Some((engine, length))
 }
@@ -267,6 +268,7 @@ fn injected_trigger(
         condition: None,
         expire_after_laps: None,
         max_delay_pct,
+        anchor_pct: None,
     };
     match when {
         SayWhen::Now => Ok((base(9, 0.25), true)),

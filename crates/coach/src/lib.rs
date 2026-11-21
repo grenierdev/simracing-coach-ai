@@ -44,16 +44,18 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/CLAUDE.md");
 /// System prompt of the analysis session (planning the next lap).
 pub const DEFAULT_ANALYSIS_PROMPT: &str = include_str!("../prompts/ANALYSIS.md");
 
-/// Defaults shipped by earlier versions (v0.2.0 to v0.5.0): a session copy
+/// Defaults shipped by earlier versions (v0.2.0 to v0.6.0): a session copy
 /// identical to one of them was not edited by the driver and is upgraded.
 pub const PREVIOUS_SYSTEM_PROMPTS: &[&str] = &[
     include_str!("../prompts/previous/CLAUDE-0.2.md"),
     include_str!("../prompts/previous/CLAUDE-0.4.md"),
+    include_str!("../prompts/previous/CLAUDE-0.5.md"),
 ];
 pub const PREVIOUS_ANALYSIS_PROMPTS: &[&str] = &[
     include_str!("../prompts/previous/ANALYSIS-0.2.md"),
     include_str!("../prompts/previous/ANALYSIS-0.4.md"),
     include_str!("../prompts/previous/ANALYSIS-0.5.md"),
+    include_str!("../prompts/previous/ANALYSIS-0.6.md"),
 ];
 
 /// What to do with the prompt copy of a session folder.
