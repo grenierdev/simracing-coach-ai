@@ -17,6 +17,9 @@ pub type ToolLog = Arc<Mutex<VecDeque<ToolCallLog>>>;
 pub struct AppData {
     /// Session served by this MCP endpoint (tool log).
     pub source: &'static str,
+    /// May speak to the driver (`say`): the conversation only. The race
+    /// engineer updates cues, spoken on the approach to their turn.
+    pub speaks: bool,
     pub snapshot: SnapshotHandle,
     pub triggers: Arc<TriggerRuntime>,
     pub tool_log: ToolLog,
@@ -39,6 +42,9 @@ impl CoachData for AppData {
     }
     fn say(&self, text: String, when: SayWhen) {
         self.triggers.say(text, when);
+    }
+    fn can_speak(&self) -> bool {
+        self.speaks
     }
     fn coaching(&self) -> Option<CoachingStatus> {
         self.coaching.as_ref().map(|c| c.lock().unwrap().clone())
@@ -147,9 +153,10 @@ pub fn start(
     };
     // One MCP endpoint per session, to know who calls which tool.
     let with_coaching = options.enabled && options.analysis;
-    let data = |source: &'static str| {
+    let data = |source: &'static str, speaks: bool| {
         Arc::new(AppData {
             source,
+            speaks,
             snapshot: snapshot.clone(),
             triggers: triggers.clone(),
             tool_log: tool_log.clone(),
@@ -157,9 +164,12 @@ pub fn start(
         })
     };
     let analysis_server = (options.enabled && options.analysis)
-        .then(|| rt.block_on(McpServerHandle::start(data("analysis"))).ok())
+        .then(|| {
+            rt.block_on(McpServerHandle::start(data("analysis", false)))
+                .ok()
+        })
         .flatten();
-    let server = match rt.block_on(McpServerHandle::start(data("conversation"))) {
+    let server = match rt.block_on(McpServerHandle::start(data("conversation", true))) {
         Ok(s) => s,
         Err(e) => {
             return AgentServices {

@@ -8,11 +8,12 @@ use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{ErrorData, tool, tool_router};
+use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -136,7 +137,21 @@ pub fn merge_plan(current: Option<Plan>, specs: Vec<TriggerSpec>, mode: PlanMode
     plan
 }
 
-#[tool_router(server_handler)]
+impl CoachMcp {
+    /// The tools of this session: without `say` when it may not speak.
+    fn tools(&self) -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
+        if !self.data.can_speak() {
+            router.remove_route("say");
+        }
+        router
+    }
+}
+
+#[tool_handler(router = self.tools())]
+impl ServerHandler for CoachMcp {}
+
+#[tool_router]
 impl CoachMcp {
     #[tool(
         description = "Session overview: recent laps, delta to the reference and time lost per corner, ranked from most to least costly, and the latest pass through each turn (analyzed right after the turn, also after a reset)."

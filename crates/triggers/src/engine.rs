@@ -169,8 +169,9 @@ impl TriggerEngine {
     /// id, same text): an updated plan does not repeat a "once" trigger already
     /// spoken, nor restart its expiry. The position is not compared: adding a
     /// cue on the same straight can move the others to make room. One-off
-    /// sentences not spoken yet (`inject`) are carried over too, with their
-    /// place in the queue.
+    /// sentences not spoken yet (`inject`) are carried over too. A sentence
+    /// waiting to be spoken keeps its place in the queue, also a cue whose
+    /// text changed: the new text is spoken on this approach.
     pub fn carry_state_from(&mut self, old: &TriggerEngine) {
         for (i, o) in old.slots.iter().enumerate() {
             let one_off = !o.trigger.at_pct.is_finite() || o.trigger.id.starts_with("say-");
@@ -178,15 +179,8 @@ impl TriggerEngine {
                 continue;
             }
             self.slots.push(o.clone());
-            let j = self.slots.len() - 1;
-            if let Some(p) = old.pending.iter().find(|p| p.slot == i) {
-                self.pending.push(Pending {
-                    slot: j,
-                    armed_pct: p.armed_pct,
-                });
-            }
             if old.to_arm.contains(&i) {
-                self.to_arm.push(j);
+                self.to_arm.push(self.slots.len() - 1);
             }
         }
         for slot in &mut self.slots {
@@ -202,6 +196,23 @@ impl TriggerEngine {
                 slot.expired = o.expired;
                 slot.dropped = o.dropped;
                 slot.base_lap = o.base_lap;
+            }
+        }
+        for p in &old.pending {
+            let o = &old.slots[p.slot];
+            let Some(j) = self
+                .slots
+                .iter()
+                .position(|s| s.trigger.id == o.trigger.id && !s.expired)
+            else {
+                continue;
+            };
+            if !self.pending.iter().any(|q| q.slot == j) {
+                self.slots[j].armed_pass = o.armed_pass;
+                self.pending.push(Pending {
+                    slot: j,
+                    armed_pct: p.armed_pct,
+                });
             }
         }
         self.prev = old.prev;
@@ -791,6 +802,51 @@ mod tests {
         sim.drive(100, 200, 1, 1.0, &[]);
         let ids: Vec<String> = sim.said().into_iter().map(|x| x.2).collect();
         assert_eq!(ids, vec!["say-1"]);
+    }
+
+    #[test]
+    fn a_cue_updated_while_waiting_is_spoken_with_its_new_text() {
+        // The cue at 0.30 is armed while another sentence plays; the race
+        // engineer rewrites it before it gets its turn: the new text goes.
+        let mut sim = Sim::new(TriggerEngine::new(vec![trig("auto-T5", 0.30, 6)], vec![]));
+        sim.drive(0, 290, 1, 1.0, &[]);
+        sim.speaking_until = sim.t + 1.0;
+        sim.drive(290, 310, 1, 1.0, &[]);
+        assert!(sim.said().is_empty());
+        let mut updated = trig("auto-T5", 0.30, 6);
+        updated.text = "Brake ten meters later.".into();
+        let mut engine = TriggerEngine::new(vec![updated], vec![]);
+        engine.carry_state_from(&sim.engine);
+        sim.engine = engine;
+        sim.drive(310, 1000, 1, 1.0, &[]);
+        let said: Vec<&str> = sim
+            .log
+            .iter()
+            .filter_map(|(_, _, c)| match c {
+                Command::Say { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said, vec!["Brake ten meters later."], "once, new text");
+    }
+
+    #[test]
+    fn a_cue_updated_after_its_approach_waits_for_the_next_pass() {
+        // Spoken at 0.30; the update lands at 0.50 (the analysis of the
+        // turn): nothing is said until the next lap's approach.
+        let mut sim = Sim::new(TriggerEngine::new(vec![trig("auto-T5", 0.30, 6)], vec![]));
+        sim.drive(0, 500, 1, 1.0, &[]);
+        let mut updated = trig("auto-T5", 0.30, 6);
+        updated.text = "Brake ten meters later.".into();
+        let mut engine = TriggerEngine::new(vec![updated], vec![]);
+        engine.carry_state_from(&sim.engine);
+        sim.engine = engine;
+        sim.drive(500, 1000, 1, 1.0, &[]);
+        sim.drive(0, 500, 2, 1.0, &[]);
+        let said: Vec<(i32, f64)> = sim.said().into_iter().map(|x| (x.0, x.1)).collect();
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert_eq!(said[1].0, 2);
+        assert!((said[1].1 - 0.30).abs() < 0.002, "{said:?}");
     }
 
     #[test]

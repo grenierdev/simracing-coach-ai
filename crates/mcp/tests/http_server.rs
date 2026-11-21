@@ -21,6 +21,8 @@ struct Fake {
     said: Mutex<Vec<String>>,
     calls: Mutex<Vec<String>>,
     coaching: Option<CoachingStatus>,
+    /// Session without the `say` tool (the race engineer).
+    mute: bool,
 }
 
 impl CoachData for Fake {
@@ -38,6 +40,9 @@ impl CoachData for Fake {
     }
     fn say(&self, text: String, _when: SayWhen) {
         self.said.lock().unwrap().push(text);
+    }
+    fn can_speak(&self) -> bool {
+        !self.mute
     }
     fn tool_called(&self, name: &str, _ok: bool, _millis: f64) {
         self.calls.lock().unwrap().push(name.to_string());
@@ -276,5 +281,42 @@ async fn overview_carries_the_turns() {
     assert_eq!(v["turns"][0]["corner"], "T4");
     assert_eq!(v["turns"][0]["best_s"], 0.15);
     assert_eq!(v["turns"][0]["queued"], true);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_race_engineer_session_cannot_speak() {
+    let data = Arc::new(Fake {
+        mute: true,
+        ..Default::default()
+    });
+    let server = McpServerHandle::start(data.clone()).await.unwrap();
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url.clone())
+                .auth_header(server.token.clone()),
+        ))
+        .await
+        .unwrap();
+    let tools = client.list_all_tools().await.unwrap();
+    let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "get_corner_summary",
+            "get_corner_trace",
+            "get_session_overview",
+            "update_plan"
+        ]
+    );
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("say")
+                .with_arguments(json!({"text": "Brake later."}).as_object().unwrap().clone()),
+        )
+        .await;
+    assert!(r.is_err() || r.unwrap().is_error == Some(true));
+    assert!(data.said.lock().unwrap().is_empty(), "nothing spoken");
     client.cancel().await.unwrap();
 }

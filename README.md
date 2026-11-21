@@ -126,6 +126,7 @@ Engine rules:
 - when a plan is loaded, the cues are placed so that they end before the braking zone (from 30 m before the reference braking point, `quiet_lead_m`): the cues of one straight are packed back to back, and a cue that would start too late is moved earlier on its straight. The time available is measured on the reference lap (the current speed overestimates it on a corner exit, where the car accelerates). A cue that still does not fit is logged, shown in red, and reported to Claude by `update_plan` with the longest sentence that would fit;
 - a cue is spoken once per **pass**, not per lap number: the line starts a new pass, and so does a reset to a save point (any jump in the track position; small backward jitter is ignored). After a reset that puts the car between a cue and its corner, the cue is spoken at once;
 - a one-off sentence (`say`, the time after a reset) survives a plan update until it is spoken;
+- a cue updated by the race engineer is never spoken when the update arrives: it is spoken on the next approach to its turn. If the old cue was armed and waiting for a moment to be spoken, it keeps its place and the new text is spoken instead;
 - among pending cues, the highest priority goes first; past its maximum delay (150 m by default), a cue is dropped (logged).
 
 The former rule *no speech in braking zones* is still available with `silence_in_braking = true` in the plan's `[settings]`: nothing then starts during braking (pedal above 5 %) or inside a quiet zone, a sentence only starts if it has time to end before the next quiet zone, and a sentence in progress is cut off if the driver brakes.
@@ -265,7 +266,7 @@ MCP tools exposed (server `coach`, HTTP on `127.0.0.1`, ephemeral port, random B
 | `get_corner_summary(corner, laps)` | metrics of one corner per lap against the reference, including turn-in, path radius, steering and line offset |
 | `get_corner_trace(corner, channels, lap)` | traces (at most 100 points per channel), lap and reference; channels include `radius` and `line_offset` |
 | `update_plan(triggers, mode)` | replaces (`replace`) or extends (`add`) the cue plan (validated before being applied); returns the speaking time each cue needs and has, and a warning for each cue that does not fit |
-| `say(text, when, corner, anchor, offset_m, position)` | one-off sentence: `now`, `next_straight` or at a `position` (corner + anchor + offset, or absolute position); always subject to the silence-under-braking rule |
+| `say(text, when, corner, anchor, offset_m, position)` | one-off sentence: `now`, `next_straight` or at a `position` (corner + anchor + offset, or absolute position). Conversation only: the race engineer's session does not have it, so its cues are only spoken on the approach to their turn |
 
 The interface shows the conversation, the tool calls with their duration, and the latency of the last speaking turn (first word) in the ACP agent indicator.
 

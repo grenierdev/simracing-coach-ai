@@ -557,7 +557,7 @@ fn turns_prompt(
         "[Turns] Passes analyzed right after each turn.\n\
          {}\n\
          Conventions: time > 0 = slower than the reference over the turn; brake point, throttle on and turn-in > 0 = later; min speed < 0 = slower; radius < 1 = tighter line; steering > 1 = more steering.\n\
-         For each of these turns, keep its cue if the advice still holds. Otherwise call update_plan once, with mode \"add\" and one cue per turn to change: id \"auto-T5\", corner \"T5\", anchor \"braking\", offset_m -300, text under the given length. A cue is spoken before its turn on the next pass, also right after a reset. Finish with one summary line for the log.",
+         For each of these turns, keep its cue if the advice still holds. Otherwise call update_plan once, with mode \"add\" and one cue per turn to change: id \"auto-T5\", corner \"T5\", anchor \"braking\", offset_m -300, text under the given length. The program speaks each cue on the approach to its turn, on the next pass or right after a reset before the turn; you cannot speak to the driver yourself. Finish with one summary line for the log.",
         lines.join("\n"),
     )
 }

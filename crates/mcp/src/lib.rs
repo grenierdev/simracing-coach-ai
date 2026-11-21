@@ -128,6 +128,11 @@ pub trait CoachData: Send + Sync + 'static {
     fn coach_plan(&self) -> Option<Plan>;
     fn apply_coach_plan(&self, plan: Plan);
     fn say(&self, text: String, when: SayWhen);
+    /// The session may speak to the driver directly (`say` tool). The race
+    /// engineer may not: its cues are spoken on the approach to their turn.
+    fn can_speak(&self) -> bool {
+        true
+    }
     /// Tool call notification (UI log).
     fn tool_called(&self, _name: &str, _ok: bool, _millis: f64) {}
     /// Turn-by-turn coaching, when the analysis session runs.
