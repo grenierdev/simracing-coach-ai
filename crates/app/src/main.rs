@@ -17,6 +17,12 @@
 //! simcoach --write-synthetic-reference <folder>
 //!                                  writes a synthetic reference lap (Garage61 CSV)
 //! ```
+//!
+//! Release builds are Windows GUI programs: no console window opens with
+//! them. Started from a terminal, they still write to it.
+
+// Debug builds keep their console for development.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
 mod speech;
@@ -105,7 +111,19 @@ fn parse_args() -> anyhow::Result<Args> {
     Ok(args)
 }
 
+/// A GUI program has no console: when started from a terminal, write the
+/// messages and `--help` to that terminal. Started from Explorer, or in a
+/// debug build (which has its own console), the call just fails.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: plain Win32 call with an integer argument.
+    let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(windows)]
+    attach_parent_console();
     // Claude goes through the CLI subscription: an API key in the environment
     // would be used (and billed) instead by the adapter. Removed before any
     // thread starts.

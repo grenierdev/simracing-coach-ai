@@ -91,6 +91,8 @@ simcoach ... --no-agent                      # no Claude
 
 In `--synthetic` mode, the synthetic reference and `plans/synthetic.toml` are loaded by default. The plan can also be chosen in the interface.
 
+On Windows, the release build opens no console window. Started from a terminal, it still writes its messages (and `--help`) to that terminal, but the terminal does not wait for it to exit. Debug builds keep their own console.
+
 ## Cues
 
 A plan is a TOML file; the full syntax is in `crates/triggers/src/plan.rs` and a commented example in `plans/synthetic.toml`.
