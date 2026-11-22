@@ -133,6 +133,11 @@ pub trait CoachData: Send + Sync + 'static {
     fn can_speak(&self) -> bool {
         true
     }
+    /// Refuses a sentence written in another language than the voice's:
+    /// the error tells Claude which language to write in.
+    fn check_language(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
     /// Tool call notification (UI log).
     fn tool_called(&self, _name: &str, _ok: bool, _millis: f64) {}
     /// Turn-by-turn coaching, when the analysis session runs.

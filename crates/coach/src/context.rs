@@ -17,6 +17,9 @@ pub struct PilotContext {
     pub recent_cues: Vec<String>,
     /// Turn-by-turn coaching: queue and time still to gain per turn.
     pub turns: Option<String>,
+    /// Language of the voice (English name): repeated in every message, the
+    /// driver may mix languages.
+    pub language: Option<String>,
 }
 
 /// `[Context] …` followed by the driver's message.
@@ -54,6 +57,11 @@ pub fn format_prompt(ctx: &PilotContext, message: &str) -> String {
                 .join("; "),
         );
     }
+    if let Some(l) = &ctx.language {
+        out.push_str(&format!(
+            "\nLanguage: reply in {l} only, whatever language the driver uses; a {l} voice reads your reply."
+        ));
+    }
     out.push_str("\n[Driver] ");
     out.push_str(message.trim());
     out
@@ -73,6 +81,7 @@ mod tests {
             live_delta: Some(0.31),
             recent_cues: vec!["Hairpin, be patient on the throttle.".into()],
             turns: Some("queued T5; most to gain: T5 +0.21 s".into()),
+            language: Some("French".into()),
         };
         let p = format_prompt(&ctx, " no rotation in T5 ");
         assert_eq!(
@@ -80,6 +89,7 @@ mod tests {
             "[Context] lap 5, position 43 %, last corner T4, next corner T5, delta +0.31 s\n\
              Turns: queued T5; most to gain: T5 +0.21 s\n\
              Recent cues: \"Hairpin, be patient on the throttle.\"\n\
+             Language: reply in French only, whatever language the driver uses; a French voice reads your reply.\n\
              [Driver] no rotation in T5"
         );
         assert!(

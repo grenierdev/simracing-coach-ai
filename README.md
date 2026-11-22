@@ -162,7 +162,10 @@ Replay mode and the synthetic session make it possible to develop without runnin
 The voice language is English or French. It sets:
 
 - the text-to-speech voice: Piper `en_US-ljspeech` (public-domain LJ Speech dataset) or Piper `fr_FR-siwis` (CC-BY 4.0);
-- the language Claude replies in, for the conversation and for the cues it writes (`say`, `update_plan`): a "Language" section is appended to both system prompts at startup;
+- the language Claude replies in, for the conversation and for the cues it writes (`say`, `update_plan`), whatever language the driver speaks: the driver may mix English and French, but the voice can only pronounce its own language. To keep to it:
+  - a "Language" section is appended to both system prompts at startup;
+  - the language is repeated in every message: in the conversation's `[Context]` block and in each `[Turns]` message to the race engineer, where a cue in place in the other language is marked to be rewritten;
+  - `update_plan` and `say` refuse a sentence clearly written in the other language (detected from common words and French accents), and Claude rewrites it;
 - speech recognition needs no setting: Parakeet v3 recognizes both languages.
 
 Choose it with the **Voice** button on the Setup screen (applies on the next launch; saved in `settings.toml` as `language = "en"` or `"fr"`), or with `--language en|fr` on the command line, which overrides the setting. English is the default.

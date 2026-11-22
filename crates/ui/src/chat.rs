@@ -218,6 +218,7 @@ pub fn driver_context(
             .map(|e| e.text.clone())
             .collect(),
         turns,
+        language: None,
     }
 }
 

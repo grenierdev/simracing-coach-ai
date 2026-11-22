@@ -226,6 +226,16 @@ impl CoachMcp {
         Parameters(args): Parameters<UpdatePlanArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let t = Instant::now();
+        // The voice speaks one language: a cue in another is rewritten.
+        if let Some(e) = args
+            .triggers
+            .iter()
+            .find_map(|s| self.data.check_language(&s.text).err())
+        {
+            self.data
+                .tool_called("update_plan", false, t.elapsed().as_secs_f64() * 1e3);
+            return tool_err(ToolError(format!("plan rejected: {e}")));
+        }
         let plan = merge_plan(self.data.coach_plan(), args.triggers, args.mode);
         let analyzer = self.data.analyzer();
         let ctx = analyzer.as_ref().map(|a| TrackContext {
@@ -279,6 +289,9 @@ impl CoachMcp {
         let text = args.text.trim().to_string();
         if text.is_empty() {
             return tool_err(ToolError("empty text".into()));
+        }
+        if let Err(e) = self.data.check_language(&text) {
+            return tool_err(ToolError(e));
         }
         let when = match args.when {
             When::Now => SayWhen::Now,

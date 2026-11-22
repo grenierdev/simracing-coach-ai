@@ -20,6 +20,8 @@ pub struct AppData {
     /// May speak to the driver (`say`): the conversation only. The race
     /// engineer updates cues, spoken on the approach to their turn.
     pub speaks: bool,
+    /// Language of the voice: cues written in another one are refused.
+    pub language: voice::Language,
     pub snapshot: SnapshotHandle,
     pub triggers: Arc<TriggerRuntime>,
     pub tool_log: ToolLog,
@@ -45,6 +47,17 @@ impl CoachData for AppData {
     }
     fn can_speak(&self) -> bool {
         self.speaks
+    }
+    fn check_language(&self, text: &str) -> Result<(), String> {
+        let voice = self.language.name();
+        match voice::Language::detect(text) {
+            Some(l) if l != self.language => Err(format!(
+                "\"{text}\" is in {}, but the voice speaks {voice} only and cannot pronounce it. \
+                 Write it in {voice}.",
+                l.name()
+            )),
+            _ => Ok(()),
+        }
     }
     fn coaching(&self) -> Option<CoachingStatus> {
         self.coaching.as_ref().map(|c| c.lock().unwrap().clone())
@@ -157,6 +170,7 @@ pub fn start(
         Arc::new(AppData {
             source,
             speaks,
+            language: options.language,
             snapshot: snapshot.clone(),
             triggers: triggers.clone(),
             tool_log: tool_log.clone(),

@@ -23,6 +23,8 @@ struct Fake {
     coaching: Option<CoachingStatus>,
     /// Session without the `say` tool (the race engineer).
     mute: bool,
+    /// The voice speaks French: sentences starting with "Brake" are refused.
+    french: bool,
 }
 
 impl CoachData for Fake {
@@ -43,6 +45,13 @@ impl CoachData for Fake {
     }
     fn can_speak(&self) -> bool {
         !self.mute
+    }
+    fn check_language(&self, text: &str) -> Result<(), String> {
+        if self.french && text.starts_with("Brake") {
+            Err(format!("\"{text}\" is in English. Write it in French."))
+        } else {
+            Ok(())
+        }
     }
     fn tool_called(&self, name: &str, _ok: bool, _millis: f64) {
         self.calls.lock().unwrap().push(name.to_string());
@@ -317,6 +326,68 @@ async fn the_race_engineer_session_cannot_speak() {
         )
         .await;
     assert!(r.is_err() || r.unwrap().is_error == Some(true));
+    assert!(data.said.lock().unwrap().is_empty(), "nothing spoken");
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cue_in_another_language_is_refused() {
+    let track = SyntheticTrack::demo();
+    let reference = lap(track.simulate_lap(1.0, 0.0, 0.0), 0);
+    let analyzer = Analyzer::new(
+        &reference,
+        Some(track.length_m()),
+        &CornerDetectionParams::default(),
+    );
+    let data = Arc::new(Fake {
+        analyzer: Some(Arc::new(analyzer)),
+        french: true,
+        ..Default::default()
+    });
+    let server = McpServerHandle::start(data.clone()).await.unwrap();
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url.clone())
+                .auth_header(server.token.clone()),
+        ))
+        .await
+        .unwrap();
+    let args = |v: Value| v.as_object().unwrap().clone();
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("update_plan").with_arguments(args(json!({
+                "triggers": [{"id": "auto-T5", "corner": "T5", "text": "Brake later."}],
+                "mode": "add"
+            }))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
+    assert!(
+        text_of(&r).contains("Write it in French"),
+        "{}",
+        text_of(&r)
+    );
+    assert!(data.plan.lock().unwrap().is_none(), "plan unchanged");
+
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("update_plan").with_arguments(args(json!({
+                "triggers": [{"id": "auto-T5", "corner": "T5", "text": "Freine plus tard."}],
+                "mode": "add"
+            }))),
+        )
+        .await
+        .unwrap();
+    assert_ne!(r.is_error, Some(true), "{}", text_of(&r));
+
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("say").with_arguments(args(json!({"text": "Brake later."}))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
     assert!(data.said.lock().unwrap().is_empty(), "nothing spoken");
     client.cancel().await.unwrap();
 }

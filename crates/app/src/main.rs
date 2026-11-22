@@ -261,6 +261,7 @@ fn main() -> anyhow::Result<()> {
                     recorder: Some(recorder.clone() as std::sync::Arc<dyn voice::Microphone>),
                     listener: Some(listener.clone()),
                     coaching: planner.is_some().then(|| coaching.clone()),
+                    language,
                 },
                 settings.speak_replies,
             );

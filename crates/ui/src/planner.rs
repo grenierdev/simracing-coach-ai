@@ -360,6 +360,7 @@ impl Loop {
             &corners,
             &windows,
             self.deps.triggers.coach_plan().as_ref(),
+            self.deps.language,
         );
         let title = corners
             .iter()
@@ -499,7 +500,9 @@ fn turns_prompt(
     corners: &[usize],
     windows: &[(String, Option<f64>)],
     coach_plan: Option<&Plan>,
+    language: Language,
 ) -> String {
+    let lang = language.name();
     let lines: Vec<String> = corners
         .iter()
         .filter_map(|&i| {
@@ -525,7 +528,12 @@ fn turns_prompt(
             let id = format!("auto-{}", h.label);
             let cue = coach_plan
                 .and_then(|p| p.triggers.iter().find(|t| t.id.as_deref() == Some(&id)))
-                .map(|t| format!("\"{}\"", t.text))
+                .map(|t| match Language::detect(&t.text) {
+                    Some(l) if l != language => {
+                        format!("\"{}\" (in {}: rewrite it in {lang})", t.text, l.name())
+                    }
+                    _ => format!("\"{}\"", t.text),
+                })
                 .unwrap_or_else(|| "none".into());
             let window = windows
                 .iter()
@@ -557,6 +565,7 @@ fn turns_prompt(
         "[Turns] Passes analyzed right after each turn.\n\
          {}\n\
          Conventions: time > 0 = slower than the reference over the turn; brake point, throttle on and turn-in > 0 = later; min speed < 0 = slower; radius < 1 = tighter line; steering > 1 = more steering.\n\
+         Language: write every cue in {lang}, whatever the language of the cue in place; a {lang} voice speaks them and cannot pronounce another language.\n\
          For each of these turns, keep its cue if the advice still holds. Otherwise call update_plan once, with mode \"add\" and one cue per turn to change: id \"auto-T5\", corner \"T5\", anchor \"braking\", offset_m -300, text under the given length. The program speaks each cue on the approach to its turn, on the next pass or right after a reset before the turn; you cannot speak to the driver yourself. Finish with one summary line for the log.",
         lines.join("\n"),
     )
@@ -717,8 +726,16 @@ mod tests {
         )
         .unwrap();
         let windows = vec![("T4".to_string(), Some(4.0))];
-        let p = turns_prompt(&t, &[3], &windows, Some(&plan));
+        // A French voice: the English cue is to be rewritten.
+        let fr = turns_prompt(&t, &[3], &windows, Some(&plan), Language::French);
+        assert!(fr.contains("write every cue in French"), "{fr}");
+        assert!(
+            fr.contains("Cue now: \"Brake later.\" (in English: rewrite it in French)"),
+            "{fr}"
+        );
+        let p = turns_prompt(&t, &[3], &windows, Some(&plan), Language::English);
         assert!(p.starts_with("[Turns] Passes analyzed right after each turn."));
+        assert!(p.contains("write every cue in English"), "{p}");
         assert!(p.contains("T4, pass 2 (lap 7, after a reset): +"), "{p}");
         assert!(p.contains("brake point"), "{p}");
         assert!(p.contains("Earlier passes: +"), "{p}");

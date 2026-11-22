@@ -172,6 +172,7 @@ fn push_to_talk_round_trip() {
                 Ok(Box::new(FixedStt) as Box<dyn Stt>)
             }))),
             coaching: None,
+            language: voice::Language::English,
         },
         true,
     );

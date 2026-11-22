@@ -56,6 +56,8 @@ pub struct ConversationDeps {
     pub listener: Option<Arc<Listener>>,
     /// Turn-by-turn coaching state, for the driver context.
     pub coaching: Option<mcp::CoachingLink>,
+    /// Language of the voice, repeated in every message to Claude.
+    pub language: voice::Language,
 }
 
 pub struct Conversation {
@@ -153,7 +155,8 @@ fn run(
             .coaching
             .as_ref()
             .and_then(|c| c.lock().unwrap().line());
-        let ctx = driver_context(&snap, analyzer.as_deref(), &status, turns);
+        let mut ctx = driver_context(&snap, analyzer.as_deref(), &status, turns);
+        ctx.language = Some(deps.language.name().into());
         Some(agent.prompt(format_prompt(&ctx, text)))
     };
     let interrupt = |busy: bool| {

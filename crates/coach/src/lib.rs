@@ -88,9 +88,12 @@ pub fn prompt_copy(existing: Option<&str>, default: &str, previous: &[&str]) -> 
 /// the English name of the voice language ("French").
 pub fn with_language(prompt: &str, language: &str) -> String {
     format!(
-        "{}\n\n## Language\n\nThe driver speaks {language}. Always reply in {language}, \
-         including the text of the cues passed to `say` and `update_plan`. \
-         The `[Context]` and `[Analysis]` blocks stay in English.\n",
+        "{}\n\n## Language\n\nEverything you write for the driver is read aloud by a {language} \
+         voice, which cannot pronounce another language. Always reply in {language}, \
+         including the text of the cues passed to `say` and `update_plan`, even when the \
+         driver speaks another language or mixes languages, and even when a cue in place \
+         is in another language (rewrite it in {language}). A cue in another language is \
+         refused. The `[Context]` and `[Turns]` blocks stay in English.\n",
         prompt.trim_end()
     )
 }
